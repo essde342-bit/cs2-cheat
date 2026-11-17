@@ -226,26 +226,19 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-// ИСПРАВЛЕННАЯ ФУНКЦИЯ: используем per-pixel hitbox
 static void UpdateHitbox(bool mouseOverMenu, bool menuOpen) {
-    if (!menuOpen) {
-        // Меню закрыто - всё окно пропускает клики
-        SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, 
-            GetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT | WS_EX_LAYERED);
-        SetLayeredWindowAttributes(g_OverlayWnd, 0, 255, LWA_ALPHA);
-    } else {
-        // Меню открыто - ловим клики только на меню
-        LONG_PTR ex = GetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE);
-        if (mouseOverMenu) {
-            // Мышь над меню - убираем TRANSPARENT, ловим клики
-            ex &= ~WS_EX_TRANSPARENT;
-            ex |= WS_EX_LAYERED;
-        } else {
-            // Мышь вне меню - добавляем TRANSPARENT, пропускаем клики
-            ex |= WS_EX_TRANSPARENT | WS_EX_LAYERED;
+    LONG_PTR ex = GetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE);
+    
+    if (!menuOpen || !mouseOverMenu) {
+        if (!(ex & WS_EX_TRANSPARENT)) {
+            ex |= WS_EX_TRANSPARENT;
+            SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, ex);
         }
-        SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, ex);
-        SetLayeredWindowAttributes(g_OverlayWnd, 0, 255, LWA_ALPHA);
+    } else {
+        if (ex & WS_EX_TRANSPARENT) {
+            ex &= ~WS_EX_TRANSPARENT;
+            SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, ex);
+        }
     }
 }
 
@@ -458,12 +451,8 @@ int main() {
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = cls; RegisterClassExW(&wc);
     
-    // СОЗДАЁМ ОКНО С WS_EX_LAYERED для per-pixel hitbox
-    g_OverlayWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    g_OverlayWnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
     if (!g_OverlayWnd) { system("pause"); return 1; }
-    
-    // Делаем фон прозрачным через alpha=0
-    SetLayeredWindowAttributes(g_OverlayWnd, 0, 0, LWA_ALPHA);
     
     MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(g_OverlayWnd, &mg);
     
@@ -542,63 +531,141 @@ int main() {
         g_VisOk = false; localIndex = -1;
 
         if (g.espEnabled || g.aimEnabled || g.trigEnabled) {
+            // ДИАГНОСТИКА: проверяем основные оффсеты
+            static bool firstRun = true;
+            if (firstRun) {
+                std::cout << "[DEBUG] dwEntityList: 0x" << std::hex << g_Offsets.dwEntityList << std::dec << "\n";
+                std::cout << "[DEBUG] m_hPlayerPawn: 0x" << std::hex << g_Offsets.m_hPlayerPawn << std::dec << "\n";
+                std::cout << "[DEBUG] m_iHealth: 0x" << std::hex << g_Offsets.m_iHealth << std::dec << "\n";
+                std::cout << "[DEBUG] m_iTeamNum: 0x" << std::hex << g_Offsets.m_iTeamNum << std::dec << "\n";
+                std::cout << "[DEBUG] Entity list address: 0x" << std::hex << el << std::dec << "\n";
+                std::cout << "[DEBUG] Local player pawn: 0x" << std::hex << lp << std::dec << "\n";
+                firstRun = false;
+            }
+            
+            int playersFound = 0;
+            int controllersFound = 0;
+            int botsFound = 0;
+            
             for (int i = 1; i <= 256; ++i) {
                 uintptr_t entity = mem.GetListEntity(el, i);
                 if (!entity) continue;
+                
+                // ДИАГНОСТИКА: первые 5 сущностей
+                if (i <= 5) {
+                    std::cout << "[DEBUG] Entity " << i << ": 0x" << std::hex << entity << std::dec << "\n";
+                }
 
                 uintptr_t pw = 0;
                 bool isBot = false;
 
                 uint32_t ph = mem.Read<uint32_t>(entity + g_Offsets.m_hPlayerPawn);
-                if (ph) {
-                    pw = mem.GetListEntity(el, ph & 0x7FFF);
+                
+                if (i <= 5) {
+                    std::cout << "[DEBUG]   m_hPlayerPawn value: 0x" << std::hex << ph << std::dec << "\n";
+                }
+                
+                if (ph && ph != 0xFFFFFFFF && ph != 0) {
+                    uintptr_t pawnIndex = ph & 0x7FFF;
+                    if (pawnIndex > 0 && pawnIndex < 0x7FFF) {
+                        pw = mem.GetListEntity(el, pawnIndex);
+                        if (i <= 5) {
+                            std::cout << "[DEBUG]   Pawn index: " << pawnIndex << ", Pawn address: 0x" << std::hex << pw << std::dec << "\n";
+                        }
+                        if (pw) controllersFound++;
+                    }
                 }
 
                 if (!pw) {
                     int testHP = mem.Read<int>(entity + g_Offsets.m_iHealth);
-                    if (testHP > 0 && testHP <= 100) {
+                    int testTeam = mem.Read<int>(entity + g_Offsets.m_iTeamNum);
+                    
+                    if (i <= 5) {
+                        std::cout << "[DEBUG]   Test HP: " << testHP << ", Team: " << testTeam << "\n";
+                    }
+                    
+                    if (testHP > 0 && testHP <= 100 && (testTeam == 2 || testTeam == 3)) {
                         uintptr_t testSN = mem.Read<uintptr_t>(entity + g_Offsets.m_pGameSceneNode);
-                        if (testSN) {
-                            pw = entity;
-                            isBot = true;
+                        if (testSN && testSN > 0x10000) {
+                            Vec3 testOrigin{};
+                            if (mem.ReadOriginSmart(testSN, testOrigin)) {
+                                pw = entity;
+                                isBot = true;
+                                botsFound++;
+                            }
                         }
                     }
                 }
 
                 if (!pw) continue;
-                if (pw == lp) { localIndex = i; continue; }
+                if (pw == lp) { 
+                    localIndex = i; 
+                    if (i <= 5) std::cout << "[DEBUG]   This is local player\n";
+                    continue; 
+                }
 
                 int hp = mem.Read<int>(pw + g_Offsets.m_iHealth);
                 if (hp <= 0 || hp > 100) continue;
 
                 int tm = mem.Read<int>(pw + g_Offsets.m_iTeamNum);
+                if (tm != 2 && tm != 3) continue;
+                
                 if (!g.showTeam && tm == lt) continue;
-
                 if (isBot && !g.showBots) continue;
 
                 uintptr_t sn = mem.Read<uintptr_t>(pw + g_Offsets.m_pGameSceneNode);
                 if (!sn) continue;
-                PInfo p{}; p.pawn = pw; p.hp = hp; p.visible = true;
+                
+                PInfo p{}; 
+                p.pawn = pw; 
+                p.hp = hp; 
+                p.visible = true;
+                
                 if (!mem.ReadOriginSmart(sn, p.origin)) continue;
+                
                 if (g.maxDistance > 0) {
                     float dx = p.origin.x-lo.x, dy = p.origin.y-lo.y, dz = p.origin.z-lo.z;
                     if (sqrtf(dx*dx+dy*dy+dz*dz) > g.maxDistance) continue;
                 }
-                if (g.visEnabled && !isBot) { bool ok = mem.ReadVisible(pw, localIndex, p.visible); if (ok) g_VisOk = true; }
+                
+                if (g.visEnabled && !isBot) { 
+                    bool ok = mem.ReadVisible(pw, localIndex, p.visible); 
+                    if (ok) g_VisOk = true; 
+                }
+                
                 p.hasBones = needBones ? mem.ReadBonesSmart(sn, p.origin, p.bones) : false;
                 int bid = BONE_IDS[g.aimBoneIdx];
                 p.bonePos = p.hasBones ? Vec3{ p.bones[bid][0][3], p.bones[bid][1][3], p.bones[bid][2][3] }
                                        : Vec3{ p.origin.x, p.origin.y, p.origin.z + 60.f };
+                
                 Vec3 d{ p.bonePos.x-eye.x, p.bonePos.y-eye.y, p.bonePos.z-eye.z };
                 float hyp = sqrtf(d.x*d.x + d.y*d.y);
                 p.pitch = atan2f(-d.z, hyp) * R2D;
                 p.yaw = atan2f(d.y, d.x) * R2D;
                 p.angDist = 9999.f;
-                if (haveAngles) { float dyaw = NormYaw(p.yaw - curAngles.y); float dp = p.pitch - curAngles.x; p.angDist = sqrtf(dyaw*dyaw + dp*dp); }
-                Vec3 hw = p.hasBones ? Vec3{ p.bones[6][0][3], p.bones[6][1][3], p.bones[6][2][3] } : Vec3{ p.origin.x, p.origin.y, p.origin.z + 75.f };
+                if (haveAngles) { 
+                    float dyaw = NormYaw(p.yaw - curAngles.y); 
+                    float dp = p.pitch - curAngles.x; 
+                    p.angDist = sqrtf(dyaw*dyaw + dp*dp); 
+                }
+                
+                Vec3 hw = p.hasBones ? Vec3{ p.bones[6][0][3], p.bones[6][1][3], p.bones[6][2][3] } 
+                                     : Vec3{ p.origin.x, p.origin.y, p.origin.z + 75.f };
                 Vec3 fw = p.origin; fw.z -= 2.f;
-                if (W2S(hw, p.sHead, vm, winW, winH) && W2S(fw, p.sFeet, vm, winW, winH)) players.push_back(p);
+                if (W2S(hw, p.sHead, vm, winW, winH) && W2S(fw, p.sFeet, vm, winW, winH)) {
+                    players.push_back(p);
+                    playersFound++;
+                }
             }
+            
+            // ДИАГНОСТИКА: статистика
+            static int frameCount = 0;
+            if (frameCount % 60 == 0) {
+                std::cout << "[STATS] Controllers: " << controllersFound 
+                          << ", Bots: " << botsFound 
+                          << ", Rendered: " << playersFound << "\n";
+            }
+            frameCount++;
         }
 
         PInfo* target = nullptr;
@@ -655,7 +722,6 @@ int main() {
         if (g.menuOpen) {
             RenderMenu();
             
-            // ПРОВЕРЯЕМ ПОЗИЦИЮ МЫШИ И ОБНОВЛЯЕМ ХИТБОКС
             POINT mousePos;
             GetCursorPos(&mousePos);
             ScreenToClient(g_OverlayWnd, &mousePos);
