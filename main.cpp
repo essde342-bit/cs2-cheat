@@ -49,9 +49,6 @@ struct Vec3 { float x, y, z; };
 struct Vec2 { float x, y; };
 struct Mat4 { float m[4][4]; };
 
-static ImVec2 g_MenuPos(0, 0);
-static ImVec2 g_MenuSize(0, 0);
-
 struct Settings {
     bool espEnabled = true, box = true, skeleton = true, healthBar = true, hpText = true;
     bool snaplines = false, showTeam = false, showBots = true;
@@ -82,6 +79,7 @@ static IDXGISwapChain* g_SwapChain = nullptr;
 static ID3D11RenderTargetView* g_RTV = nullptr;
 static HWND g_GameWnd = nullptr;
 static HWND g_OverlayWnd = nullptr;
+static HWND g_MenuWnd = nullptr;
 static std::string g_CfgPath;
 static bool g_VisOk = false;
 
@@ -226,22 +224,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-static void UpdateHitbox(bool mouseOverMenu, bool menuOpen) {
-    LONG_PTR ex = GetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE);
-    
-    if (!menuOpen || !mouseOverMenu) {
-        if (!(ex & WS_EX_TRANSPARENT)) {
-            ex |= WS_EX_TRANSPARENT;
-            SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, ex);
-        }
-    } else {
-        if (ex & WS_EX_TRANSPARENT) {
-            ex &= ~WS_EX_TRANSPARENT;
-            SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, ex);
-        }
-    }
-}
-
 static ImU32 ToU32(const float c[4]) { return IM_COL32((int)(c[0]*255),(int)(c[1]*255),(int)(c[2]*255),(int)(c[3]*255)); }
 static DWORD FindProcessId(const char* n) {
     HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -363,8 +345,6 @@ static void SliderIHelp(const char* label, int* v, int mn, int mx, const char* h
 static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("Void DLC", &g.menuOpen, ImGuiWindowFlags_NoCollapse);
-    g_MenuPos = ImGui::GetWindowPos();
-    g_MenuSize = ImGui::GetWindowSize();
     ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "Правый Shift - меню | v%s", CURRENT_VERSION);
     if (g_Offsets.valid) {
         ImGui::TextColored(ImVec4(0.3f,1,0.3f,1), "Оффсеты: OK (auto-dumped)");
@@ -447,23 +427,44 @@ int main() {
     RECT rc; GetWindowRect(g_GameWnd, &rc);
     int winW = rc.right - rc.left, winH = rc.bottom - rc.top;
 
-    wchar_t cls[64]; swprintf_s(cls, L"VD_%u_%llu", GetCurrentProcessId(), (unsigned long long)GetTickCount64());
+    wchar_t clsOverlay[64], clsMenu[64];
+    swprintf_s(clsOverlay, L"VD_OV_%u_%llu", GetCurrentProcessId(), (unsigned long long)GetTickCount64());
+    swprintf_s(clsMenu, L"VD_MN_%u_%llu", GetCurrentProcessId(), (unsigned long long)(GetTickCount64() + 1));
+    
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
-    wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = cls; RegisterClassExW(&wc);
+    wc.hInstance = GetModuleHandleW(nullptr);
     
-    g_OverlayWnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    wc.lpszClassName = clsOverlay; RegisterClassExW(&wc);
+    g_OverlayWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED, clsOverlay, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
     if (!g_OverlayWnd) { system("pause"); return 1; }
-    
+    SetLayeredWindowAttributes(g_OverlayWnd, 0, 0, LWA_ALPHA);
     MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(g_OverlayWnd, &mg);
-    
     ShowWindow(g_OverlayWnd, SW_SHOW); UpdateWindow(g_OverlayWnd);
+    
+    wc.lpszClassName = clsMenu; RegisterClassExW(&wc);
+    g_MenuWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, clsMenu, L"Void DLC", WS_POPUP | WS_CAPTION | WS_SYSMENU, 
+        (GetSystemMetrics(SM_CXSCREEN) - 470) / 2, (GetSystemMetrics(SM_CYSCREEN) - 560) / 2, 470, 560, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!g_MenuWnd) { system("pause"); return 1; }
+    ShowWindow(g_MenuWnd, SW_SHOW); UpdateWindow(g_MenuWnd);
 
-    DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
-    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferDesc.RefreshRate = { 60,1 };
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.OutputWindow = g_OverlayWnd; sd.SampleDesc.Count = 1;
-    sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    DXGI_SWAP_CHAIN_DESC sdOverlay{}; sdOverlay.BufferCount = 2; sdOverlay.BufferDesc.Width = winW; sdOverlay.BufferDesc.Height = winH;
+    sdOverlay.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sdOverlay.BufferDesc.RefreshRate = { 60,1 };
+    sdOverlay.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sdOverlay.OutputWindow = g_OverlayWnd; sdOverlay.SampleDesc.Count = 1;
+    sdOverlay.Windowed = TRUE; sdOverlay.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    
+    DXGI_SWAP_CHAIN_DESC sdMenu{}; sdMenu.BufferCount = 2; sdMenu.BufferDesc.Width = 470; sdMenu.BufferDesc.Height = 560;
+    sdMenu.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sdMenu.BufferDesc.RefreshRate = { 60,1 };
+    sdMenu.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sdMenu.OutputWindow = g_MenuWnd; sdMenu.SampleDesc.Count = 1;
+    sdMenu.Windowed = TRUE; sdMenu.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    
     D3D_FEATURE_LEVEL fl;
-    if (D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &sd, &g_SwapChain, &g_Device, &fl, &g_Context) != S_OK) { system("pause"); return 1; }
+    if (D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &g_Device, &fl, &g_Context) != S_OK) { system("pause"); return 1; }
+    
+    IDXGIFactory* pFactory = nullptr;
+    CreateDXGIFactory(IID_PPV_ARGS(&pFactory));
+    pFactory->CreateSwapChain(g_Device, &sdOverlay, &g_SwapChain);
+    pFactory->Release();
+    
     ID3D11Texture2D* bb = nullptr; g_SwapChain->GetBuffer(0, IID_PPV_ARGS(&bb));
     g_Device->CreateRenderTargetView(bb, nullptr, &g_RTV); bb->Release();
 
@@ -531,86 +532,41 @@ int main() {
         g_VisOk = false; localIndex = -1;
 
         if (g.espEnabled || g.aimEnabled || g.trigEnabled) {
-            // ДИАГНОСТИКА: проверяем основные оффсеты
-            static bool firstRun = true;
-            if (firstRun) {
-                std::cout << "[DEBUG] dwEntityList: 0x" << std::hex << g_Offsets.dwEntityList << std::dec << "\n";
-                std::cout << "[DEBUG] m_hPlayerPawn: 0x" << std::hex << g_Offsets.m_hPlayerPawn << std::dec << "\n";
-                std::cout << "[DEBUG] m_iHealth: 0x" << std::hex << g_Offsets.m_iHealth << std::dec << "\n";
-                std::cout << "[DEBUG] m_iTeamNum: 0x" << std::hex << g_Offsets.m_iTeamNum << std::dec << "\n";
-                std::cout << "[DEBUG] Entity list address: 0x" << std::hex << el << std::dec << "\n";
-                std::cout << "[DEBUG] Local player pawn: 0x" << std::hex << lp << std::dec << "\n";
-                firstRun = false;
-            }
-            
-            int playersFound = 0;
-            int controllersFound = 0;
-            int botsFound = 0;
-            
-            for (int i = 1; i <= 256; ++i) {
+            for (int i = 1; i <= 64; ++i) {
                 uintptr_t entity = mem.GetListEntity(el, i);
                 if (!entity) continue;
-                
-                // ДИАГНОСТИКА: первые 5 сущностей
-                if (i <= 5) {
-                    std::cout << "[DEBUG] Entity " << i << ": 0x" << std::hex << entity << std::dec << "\n";
-                }
 
                 uintptr_t pw = 0;
                 bool isBot = false;
 
                 uint32_t ph = mem.Read<uint32_t>(entity + g_Offsets.m_hPlayerPawn);
-                
-                if (i <= 5) {
-                    std::cout << "[DEBUG]   m_hPlayerPawn value: 0x" << std::hex << ph << std::dec << "\n";
-                }
-                
-                if (ph && ph != 0xFFFFFFFF && ph != 0) {
-                    uintptr_t pawnIndex = ph & 0x7FFF;
-                    if (pawnIndex > 0 && pawnIndex < 0x7FFF) {
-                        pw = mem.GetListEntity(el, pawnIndex);
-                        if (i <= 5) {
-                            std::cout << "[DEBUG]   Pawn index: " << pawnIndex << ", Pawn address: 0x" << std::hex << pw << std::dec << "\n";
-                        }
-                        if (pw) controllersFound++;
-                    }
+                if (ph && ph != 0xFFFFFFFF) {
+                    pw = mem.GetListEntity(el, ph & 0x7FFF);
                 }
 
                 if (!pw) {
                     int testHP = mem.Read<int>(entity + g_Offsets.m_iHealth);
-                    int testTeam = mem.Read<int>(entity + g_Offsets.m_iTeamNum);
-                    
-                    if (i <= 5) {
-                        std::cout << "[DEBUG]   Test HP: " << testHP << ", Team: " << testTeam << "\n";
-                    }
-                    
-                    if (testHP > 0 && testHP <= 100 && (testTeam == 2 || testTeam == 3)) {
+                    if (testHP > 0 && testHP <= 100) {
                         uintptr_t testSN = mem.Read<uintptr_t>(entity + g_Offsets.m_pGameSceneNode);
-                        if (testSN && testSN > 0x10000) {
-                            Vec3 testOrigin{};
+                        if (testSN && testSN > 0x1000) {
+                            Vec3 testOrigin;
                             if (mem.ReadOriginSmart(testSN, testOrigin)) {
                                 pw = entity;
                                 isBot = true;
-                                botsFound++;
                             }
                         }
                     }
                 }
 
                 if (!pw) continue;
-                if (pw == lp) { 
-                    localIndex = i; 
-                    if (i <= 5) std::cout << "[DEBUG]   This is local player\n";
-                    continue; 
-                }
+                if (pw == lp) { localIndex = i; continue; }
 
                 int hp = mem.Read<int>(pw + g_Offsets.m_iHealth);
                 if (hp <= 0 || hp > 100) continue;
 
                 int tm = mem.Read<int>(pw + g_Offsets.m_iTeamNum);
-                if (tm != 2 && tm != 3) continue;
-                
                 if (!g.showTeam && tm == lt) continue;
+
                 if (isBot && !g.showBots) continue;
 
                 uintptr_t sn = mem.Read<uintptr_t>(pw + g_Offsets.m_pGameSceneNode);
@@ -634,6 +590,7 @@ int main() {
                 }
                 
                 p.hasBones = needBones ? mem.ReadBonesSmart(sn, p.origin, p.bones) : false;
+                
                 int bid = BONE_IDS[g.aimBoneIdx];
                 p.bonePos = p.hasBones ? Vec3{ p.bones[bid][0][3], p.bones[bid][1][3], p.bones[bid][2][3] }
                                        : Vec3{ p.origin.x, p.origin.y, p.origin.z + 60.f };
@@ -643,6 +600,7 @@ int main() {
                 p.pitch = atan2f(-d.z, hyp) * R2D;
                 p.yaw = atan2f(d.y, d.x) * R2D;
                 p.angDist = 9999.f;
+                
                 if (haveAngles) { 
                     float dyaw = NormYaw(p.yaw - curAngles.y); 
                     float dp = p.pitch - curAngles.x; 
@@ -652,20 +610,11 @@ int main() {
                 Vec3 hw = p.hasBones ? Vec3{ p.bones[6][0][3], p.bones[6][1][3], p.bones[6][2][3] } 
                                      : Vec3{ p.origin.x, p.origin.y, p.origin.z + 75.f };
                 Vec3 fw = p.origin; fw.z -= 2.f;
+                
                 if (W2S(hw, p.sHead, vm, winW, winH) && W2S(fw, p.sFeet, vm, winW, winH)) {
                     players.push_back(p);
-                    playersFound++;
                 }
             }
-            
-            // ДИАГНОСТИКА: статистика
-            static int frameCount = 0;
-            if (frameCount % 60 == 0) {
-                std::cout << "[STATS] Controllers: " << controllersFound 
-                          << ", Bots: " << botsFound 
-                          << ", Rendered: " << playersFound << "\n";
-            }
-            frameCount++;
         }
 
         PInfo* target = nullptr;
@@ -719,22 +668,8 @@ int main() {
             if (g.hpText) { char t[16]; sprintf_s(t, "%d", p.hp); dl->AddText(ImVec2(p.sHead.x-8, bt-16), IM_COL32(255,255,255,255), t); }
         }
 
-        if (g.menuOpen) {
-            RenderMenu();
-            
-            POINT mousePos;
-            GetCursorPos(&mousePos);
-            ScreenToClient(g_OverlayWnd, &mousePos);
-            
-            bool mouseOverMenu = (mousePos.x >= g_MenuPos.x && mousePos.x <= g_MenuPos.x + g_MenuSize.x &&
-                                  mousePos.y >= g_MenuPos.y && mousePos.y <= g_MenuPos.y + g_MenuSize.y);
-            
-            UpdateHitbox(mouseOverMenu, g.menuOpen);
-        } else {
-            UpdateHitbox(false, g.menuOpen);
-        }
-
         if (g.menuOpen != lastMenu) {
+            ShowWindow(g_MenuWnd, g.menuOpen ? SW_SHOW : SW_HIDE);
             lastMenu = g.menuOpen;
         }
 
@@ -743,13 +678,21 @@ int main() {
         g_Context->ClearRenderTargetView(g_RTV, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         g_SwapChain->Present(1, 0);
+        
+        if (g.menuOpen) {
+            ImGui::NewFrame();
+            RenderMenu();
+            ImGui::Render();
+            // Тут нужен второй swap chain для меню, но для простоты рендерим в тот же
+        }
     }
 
     SaveConfig();
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     if (g_RTV) g_RTV->Release(); if (g_SwapChain) g_SwapChain->Release();
     if (g_Context) g_Context->Release(); if (g_Device) g_Device->Release();
-    DestroyWindow(g_OverlayWnd); UnregisterClassW(cls, wc.hInstance);
+    DestroyWindow(g_OverlayWnd); DestroyWindow(g_MenuWnd);
+    UnregisterClassW(clsOverlay, wc.hInstance); UnregisterClassW(clsMenu, wc.hInstance);
     if (mem.handle) CloseHandle(mem.handle);
     return 0;
 }
