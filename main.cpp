@@ -47,7 +47,7 @@ struct Mat4 { float m[4][4]; };
 
 struct Settings {
     bool espEnabled = true, box = true, skeleton = true, healthBar = true, hpText = true;
-    bool snaplines = false, showTeam = false, debugHud = true, fovCircle = true, showBots = true;
+    bool snaplines = false, showTeam = false, showBots = true;
     float maxDistance = 5000.f, boxThickness = 2.f;
     float boxColor[4] = { 1,0,0,1 }, skelColor[4] = { 1,1,1,1 }, snapColor[4] = { 1,1,0,1 };
     bool aimEnabled = false, aimToggle = false, visEnabled = true;
@@ -98,7 +98,7 @@ static void SaveConfig() {
     WF("vis", "maxdist", g.maxDistance); WF("vis", "boxthick", g.boxThickness);
     WI("vis", "esp", g.espEnabled); WI("vis", "box", g.box); WI("vis", "skel", g.skeleton);
     WI("vis", "hpbar", g.healthBar); WI("vis", "hptext", g.hpText); WI("vis", "snap", g.snaplines);
-    WI("vis", "team", g.showTeam); WI("vis", "bots", g.showBots); WI("vis", "hud", g.debugHud); WI("vis", "fovc", g.fovCircle);
+    WI("vis", "team", g.showTeam); WI("vis", "bots", g.showBots);
     WC("vis", "boxcol", g.boxColor); WC("vis", "skelcol", g.skelColor); WC("vis", "snapcol", g.snapColor);
     WI("aim", "on", g.aimEnabled); WI("aim", "toggle", g.aimToggle); WI("aim", "key", g.aimKeyIdx);
     WI("aim", "vis", g.visEnabled);
@@ -114,7 +114,7 @@ static void LoadConfig() {
     g.maxDistance = RF("vis", "maxdist", g.maxDistance); g.boxThickness = RF("vis", "boxthick", g.boxThickness);
     g.espEnabled = RI("vis", "esp", g.espEnabled); g.box = RI("vis", "box", g.box); g.skeleton = RI("vis", "skel", g.skeleton);
     g.healthBar = RI("vis", "hpbar", g.healthBar); g.hpText = RI("vis", "hptext", g.hpText); g.snaplines = RI("vis", "snap", g.snaplines);
-    g.showTeam = RI("vis", "team", g.showTeam); g.showBots = RI("vis", "bots", g.showBots); g.debugHud = RI("vis", "hud", g.debugHud); g.fovCircle = RI("vis", "fovc", g.fovCircle);
+    g.showTeam = RI("vis", "team", g.showTeam); g.showBots = RI("vis", "bots", g.showBots);
     RC("vis", "boxcol", g.boxColor); RC("vis", "skelcol", g.skelColor); RC("vis", "snapcol", g.snapColor);
     g.aimEnabled = RI("aim", "on", g.aimEnabled); g.aimToggle = RI("aim", "toggle", g.aimToggle); g.aimKeyIdx = RI("aim", "key", g.aimKeyIdx);
     g.visEnabled = RI("aim", "vis", g.visEnabled);
@@ -167,8 +167,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 static void SetClickThrough(HWND h, bool on) {
     LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-    if (on) ex |= WS_EX_TRANSPARENT; else ex &= ~WS_EX_TRANSPARENT;
+    if (on) {
+        ex |= WS_EX_TRANSPARENT;
+    } else {
+        ex &= ~WS_EX_TRANSPARENT;
+    }
     SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
+    SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
 static ImU32 ToU32(const float c[4]) { return IM_COL32((int)(c[0]*255),(int)(c[1]*255),(int)(c[2]*255),(int)(c[3]*255)); }
 static DWORD FindProcessId(const char* n) {
@@ -287,7 +292,7 @@ static void SliderIHelp(const char* label, int* v, int mn, int mx, const char* h
 
 static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Void DLC", &g.menuOpen, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin("Void DLC", nullptr, ImGuiWindowFlags_NoCollapse);
     ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "%s - меню | v%s", MENU_KEY_NAMES[g.menuKeyIdx], CURRENT_VERSION);
     ImGui::Separator();
     if (ImGui::BeginTabBar("tabs")) {
@@ -305,8 +310,6 @@ static void RenderMenu() {
             ImGui::Checkbox("Показывать своих", &g.showTeam);
             ImGui::Checkbox("Показывать ботов", &g.showBots); ImGui::SameLine(); Help("Включает ESP на ботов. Работает и на игроков, и на ботов одновременно.");
             SliderFHelp("Дистанция (0=все)", &g.maxDistance, 0, 10000, "%.0f", "Дальше этого расстояния враги не рисуются. 0 = без ограничения.");
-            ImGui::Checkbox("Служебная строка (HUD)", &g.debugHud);
-            ImGui::Checkbox("Круг FOV аима", &g.fovCircle);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Аим")) {
@@ -319,7 +322,7 @@ static void RenderMenu() {
             SliderFHelp("Дрожание", &g.aimJitter, 0, 1.5f, "%.2f", "Мелкая случайная тряска прицела, чтобы движение не было идеальным.");
             SliderIHelp("Задержка реакции (мс)", &g.aimReactionMs, 0, 350, "Пауза перед началом наводки на новую цель, как у человека.");
             ImGui::Separator();
-            ImGui::Checkbox("Только видимые враги (vis check)", &g.visEnabled); ImGui::SameLine(); Help("Аим берёт цель только если ты её реально видишь. Если в HUD vis:n/a - фильтр отключается автоматически.");
+            ImGui::Checkbox("Только видимые враги (vis check)", &g.visEnabled); ImGui::SameLine(); Help("Аим берёт цель только если ты её реально видишь.");
             ImGui::Separator();
             SliderFHelp("Высота глаз", &g.eyeHeight, 40, 72, "%.1f", "Стоя ~64, сидя ~46. Влияет на вертикальную наводку.");
             ImGui::Checkbox("Своя чувствительность", &g.manualSens);
@@ -366,16 +369,20 @@ int main() {
     Memory mem; if (!mem.Init()) { system("pause"); return 1; }
     DWORD pid = FindProcessId("cs2.exe");
     g_GameWnd = FindWindowByPid(pid); if (!g_GameWnd) { system("pause"); return 1; }
+    
     RECT rc; GetWindowRect(g_GameWnd, &rc);
     int winW = rc.right - rc.left, winH = rc.bottom - rc.top;
 
     wchar_t cls[64]; swprintf_s(cls, L"VD_%u_%llu", GetCurrentProcessId(), (unsigned long long)GetTickCount64());
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = cls; RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TRANSPARENT, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    
+    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
     if (!hwnd) { system("pause"); return 1; }
+    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
     MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(hwnd, &mg);
     ShowWindow(hwnd, SW_SHOW); UpdateWindow(hwnd);
+    SetClickThrough(hwnd, false);
 
     DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferDesc.RefreshRate = { 60,1 };
@@ -400,8 +407,6 @@ int main() {
     pst.Colors[ImGuiCol_SliderGrab] = ImVec4(0.35f, 0.62f, 1.0f, 1);
     pst.Colors[ImGuiCol_CheckMark] = ImVec4(0.35f, 0.62f, 1.0f, 1);
     ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(g_Device, g_Context);
-
-    MessageBoxA(hwnd, "Окно создано. Нажми OK чтобы продолжить.\nЕсли это окно не появилось - проблема на уровне окна, не чит.", "Void DLC - Проверка", MB_OK | MB_ICONINFORMATION);
 
     const float clear[4] = { 0,0,0,0 };
     static const int kSkel[][2] = { {6,5},{5,4},{4,2},{2,0},{4,8},{8,9},{9,10},{4,13},{13,14},{14,15},{0,22},{22,23},{23,24},{0,25},{25,26},{26,27} };
@@ -454,7 +459,7 @@ int main() {
         g_VisOk = false; localIndex = -1;
 
         if (g.espEnabled || g.aimEnabled || g.trigEnabled) {
-            for (int i = 1; i <= 128; ++i) {
+            for (int i = 1; i <= 256; ++i) {
                 uintptr_t entity = mem.GetListEntity(el, i);
                 if (!entity) continue;
 
@@ -469,8 +474,11 @@ int main() {
                 if (!pw) {
                     int testHP = mem.Read<int>(entity + M_I_HEALTH);
                     if (testHP > 0 && testHP <= 100) {
-                        pw = entity;
-                        isBot = true;
+                        uintptr_t testSN = mem.Read<uintptr_t>(entity + M_P_GAME_SCENE_NODE);
+                        if (testSN) {
+                            pw = entity;
+                            isBot = true;
+                        }
                     }
                 }
 
@@ -542,10 +550,9 @@ int main() {
         }
 
         ImU32 bc = ToU32(g.boxColor), sc = ToU32(g.skelColor), nc = ToU32(g.snapColor);
-        int drawn = 0;
         if (g.espEnabled) for (auto& p : players) {
             float h = p.sFeet.y - p.sHead.y; if (h < 5) continue;
-            float w = h * 0.35f, bt = p.sHead.y - h * 0.06f; drawn++;
+            float w = h * 0.35f, bt = p.sHead.y - h * 0.06f;
             if (g.snaplines) dl->AddLine(ImVec2(winW*0.5f, (float)winH), ImVec2(p.sFeet.x, p.sFeet.y), nc, 1);
             if (g.box) dl->AddRect(ImVec2(p.sHead.x-w*0.5f, bt), ImVec2(p.sHead.x+w*0.5f, p.sFeet.y), bc, 0, 0, g.boxThickness);
             if (g.healthBar) {
@@ -560,18 +567,6 @@ int main() {
                 if (W2S(p1, s1, vm, winW, winH) && W2S(p2, s2, vm, winW, winH)) dl->AddLine(ImVec2(s1.x, s1.y), ImVec2(s2.x, s2.y), sc, 1.5f);
             }
             if (g.hpText) { char t[16]; sprintf_s(t, "%d", p.hp); dl->AddText(ImVec2(p.sHead.x-8, bt-16), IM_COL32(255,255,255,255), t); }
-        }
-
-        // FOV circle and HUD only when menu is closed
-        if (!g.menuOpen) {
-            if (g.aimEnabled && g.fovCircle) { float r = (g.aimFov / 90.f) * (winH * 0.5f); dl->AddCircle(ImVec2(winW*0.5f, winH*0.5f), r, IM_COL32(255,255,255,60), 48, 1.f); }
-            if (g.debugHud) {
-                char dbg[160];
-                sprintf_s(dbg, "Void v%s | drawn:%d | sens:%.2f | vis:%s | aim:%s | tgt:%s | menu:%s",
-                    CURRENT_VERSION, drawn, usedSens, g_VisOk ? "ok" : "n/a",
-                    (g.aimEnabled && aimActive) ? "ON" : "off", target ? "yes" : "no", MENU_KEY_NAMES[g.menuKeyIdx]);
-                dl->AddText(ImVec2(8, 8), IM_COL32(0,255,128,200), dbg);
-            }
         }
 
         if (g.menuOpen) RenderMenu();
