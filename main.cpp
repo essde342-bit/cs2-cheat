@@ -26,17 +26,25 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 #define CURRENT_VERSION "2.0.0"
 #define VERSION_URL "https://raw.githubusercontent.com/essde342-bit/cs2-cheat/main/version.json"
 
-#define DW_ENTITY_LIST        0x2709010
-#define DW_LOCAL_PLAYER_PAWN  0x2553D38
-#define DW_VIEW_MATRIX        0x2559640
-#define DW_VIEW_ANGLES        0x256A4B8
-#define DW_SENSITIVITY        0x2551038
-#define DW_SENS_OFF           0x58
-#define M_H_PLAYER_PAWN       0x92C
-#define M_I_HEALTH            0x344
-#define M_I_TEAM_NUM          0x3E3
-#define M_P_GAME_SCENE_NODE   0x328
-#define M_ENTITY_SPOTTED_STATE 0x1438
+// Структура для хранения найденных оффсетов
+struct DumpedOffsets {
+    uintptr_t dwEntityList = 0;
+    uintptr_t dwLocalPlayerPawn = 0;
+    uintptr_t dwViewMatrix = 0;
+    uintptr_t dwViewAngles = 0;
+    uintptr_t dwSensitivity = 0;
+    uintptr_t dwSensOffset = 0x58;
+    
+    uintptr_t m_hPlayerPawn = 0x92C;
+    uintptr_t m_iHealth = 0x344;
+    uintptr_t m_iTeamNum = 0x3E3;
+    uintptr_t m_pGameSceneNode = 0x328;
+    uintptr_t m_entitySpottedState = 0x1438;
+    
+    bool valid = false;
+};
+
+static DumpedOffsets g_Offsets;
 
 static const float PI = 3.14159265358979f;
 static const float R2D = 180.f / PI;
@@ -80,6 +88,122 @@ static HWND g_GameWnd = nullptr;
 static HWND g_OverlayWnd = nullptr;
 static std::string g_CfgPath;
 static bool g_VisOk = false;
+
+// ============================================
+// OFFSET DUMPER - Signature Scanning
+// ============================================
+
+class OffsetDumper {
+public:
+    static bool ScanModule(HANDLE hProcess, uintptr_t moduleBase, size_t moduleSize) {
+        std::cout << "[*] Starting offset dump...\n";
+        
+        // Сигнатуры для глобальных оффсетов CS2
+        // Формат: { сигнатура, маска, тип оффсета, offset_from_pattern }
+        struct Signature {
+            const char* pattern;
+            const char* mask;
+            int type; // 1=EntityList, 2=LocalPlayer, 3=ViewMatrix, 4=ViewAngles, 5=Sensitivity
+            int offset;
+        };
+        
+        // Сигнатуры из cs2-dumper patterns
+        std::vector<Signature> signatures = {
+            // dwEntityList: 48 8B 0D ? ? ? ? 48 89 7C 24
+            {"\x48\x8B\x0D\x00\x00\x00\x00\x48\x89\x7C\x24", "xxx????xxxx", 1, 3},
+            
+            // dwLocalPlayerPawn: 48 8B 05 ? ? ? ? 48 85 C0 74 ? 8B 88
+            {"\x48\x8B\x05\x00\x00\x00\x00\x48\x85\xC0\x74\x00\x8B\x88", "xxx????xxxx?xx", 2, 3},
+            
+            // dwViewMatrix: 48 8D 0D ? ? ? ? 48 C1 E0 06
+            {"\x48\x8D\x0D\x00\x00\x00\x00\x48\xC1\xE0\x06", "xxx????xxxx", 3, 3},
+            
+            // dwViewAngles: 48 8B 0D ? ? ? ? E8 ? ? ? ? F3 0F 10 05
+            {"\x48\x8B\x0D\x00\x00\x00\x00\xE8\x00\x00\x00\x00\xF3\x0F\x10\x05", "xxx????x????xxxx", 4, 3},
+            
+            // dwSensitivity: 48 8B 05 ? ? ? ? F3 0F 10 88 ? ? ? ?
+            {"\x48\x8B\x05\x00\x00\x00\x00\xF3\x0F\x10\x88\x00\x00\x00\x00", "xxx????xxxx????", 5, 3}
+        };
+        
+        // Читаем весь модуль в память
+        std::vector<uint8_t> moduleData(moduleSize);
+        SIZE_T bytesRead;
+        if (!ReadProcessMemory(hProcess, (LPCVOID)moduleBase, moduleData.data(), moduleSize, &bytesRead)) {
+            std::cout << "[!] Failed to read module memory\n";
+            return false;
+        }
+        
+        // Сканируем на сигнатуры
+        for (const auto& sig : signatures) {
+            uintptr_t found = FindPattern(moduleData.data(), moduleSize, sig.pattern, sig.mask);
+            if (found) {
+                // Извлекаем relative offset из паттерна (обычно 3-7 байт после опкода)
+                int32_t relativeOffset = *(int32_t*)(moduleData.data() + found + sig.offset);
+                
+                // Вычисляем абсолютный адрес: next_instruction + relative_offset
+                uintptr_t absoluteAddr = moduleBase + found + sig.offset + 4 + relativeOffset;
+                
+                // Для некоторых оффсетов нужно dereference pointer
+                uintptr_t finalOffset = absoluteAddr - moduleBase;
+                
+                switch (sig.type) {
+                    case 1: g_Offsets.dwEntityList = finalOffset; break;
+                    case 2: g_Offsets.dwLocalPlayerPawn = finalOffset; break;
+                    case 3: g_Offsets.dwViewMatrix = finalOffset; break;
+                    case 4: g_Offsets.dwViewAngles = finalOffset; break;
+                    case 5: g_Offsets.dwSensitivity = finalOffset; break;
+                }
+                
+                std::cout << "[+] Found offset type " << sig.type << " at 0x" << std::hex << finalOffset << std::dec << "\n";
+            } else {
+                std::cout << "[!] Pattern not found for type " << sig.type << "\n";
+            }
+        }
+        
+        // Проверяем что нашли хотя бы основные оффсеты
+        g_Offsets.valid = (g_Offsets.dwEntityList != 0 && g_Offsets.dwLocalPlayerPawn != 0);
+        
+        if (g_Offsets.valid) {
+            std::cout << "[+] Offset dump successful!\n";
+            std::cout << "    dwEntityList: 0x" << std::hex << g_Offsets.dwEntityList << std::dec << "\n";
+            std::cout << "    dwLocalPlayerPawn: 0x" << std::hex << g_Offsets.dwLocalPlayerPawn << std::dec << "\n";
+            std::cout << "    dwViewMatrix: 0x" << std::hex << g_Offsets.dwViewMatrix << std::dec << "\n";
+            std::cout << "    dwViewAngles: 0x" << std::hex << g_Offsets.dwViewAngles << std::dec << "\n";
+            std::cout << "    dwSensitivity: 0x" << std::hex << g_Offsets.dwSensitivity << std::dec << "\n";
+        } else {
+            std::cout << "[!] Offset dump failed - using fallback values\n";
+            // Fallback на захардкоженные значения
+            g_Offsets.dwEntityList = 0x2709010;
+            g_Offsets.dwLocalPlayerPawn = 0x2553D38;
+            g_Offsets.dwViewMatrix = 0x2559640;
+            g_Offsets.dwViewAngles = 0x256A4B8;
+            g_Offsets.dwSensitivity = 0x2551038;
+        }
+        
+        return g_Offsets.valid;
+    }
+    
+private:
+    static uintptr_t FindPattern(const uint8_t* data, size_t size, const char* pattern, const char* mask) {
+        size_t patternLen = strlen(mask);
+        
+        for (size_t i = 0; i <= size - patternLen; i++) {
+            bool found = true;
+            for (size_t j = 0; j < patternLen; j++) {
+                if (mask[j] != '?' && pattern[j] != data[i + j]) {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) return i;
+        }
+        return 0;
+    }
+};
+
+// ============================================
+// END OFFSET DUMPER
+// ============================================
 
 static void InitCfgPath() {
     char ad[MAX_PATH]; GetEnvironmentVariableA("APPDATA", ad, MAX_PATH);
@@ -191,7 +315,8 @@ static HWND FindWindowByPid(DWORD p) { WD w{ p, nullptr }; EnumWindows(EWC, (LPA
 
 class Memory {
 public:
-    HANDLE handle = nullptr; uintptr_t clientBase = 0;
+    HANDLE handle = nullptr; uintptr_t clientBase = 0; size_t clientSize = 0;
+    
     bool Init() {
         DWORD pid = FindProcessId("cs2.exe");
         if (!pid) { std::cout << "[!] cs2.exe not found\n"; return false; }
@@ -201,22 +326,37 @@ public:
         if (s != INVALID_HANDLE_VALUE) {
             MODULEENTRY32 me; me.dwSize = sizeof(me);
             if (Module32First(s, &me)) do {
-                if (!_stricmp(me.szModule, "client.dll")) { clientBase = (uintptr_t)me.modBaseAddr; break; }
+                if (!_stricmp(me.szModule, "client.dll")) { 
+                    clientBase = (uintptr_t)me.modBaseAddr;
+                    clientSize = me.modBaseSize;
+                    break; 
+                }
             } while (Module32Next(s, &me));
             CloseHandle(s);
         }
         CloseHandle(hq);
         if (!clientBase) { std::cout << "[!] client.dll not found\n"; return false; }
-        handle = OpenProcess(PROCESS_VM_READ, FALSE, pid);
+        
+        // ВАЖНО: открываем с полными правами для дампинга
+        handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
         if (!handle) { std::cout << "[!] OpenProcess(read) failed\n"; return false; }
+        
+        // Запускаем дампинг оффсетов
+        if (!OffsetDumper::ScanModule(handle, clientBase, clientSize)) {
+            std::cout << "[!] Offset dump failed, using fallback\n";
+        }
+        
         return true;
     }
+    
     template<typename T> T Read(uintptr_t a) const { T v{}; ReadProcessMemory(handle, (LPCVOID)a, &v, sizeof(T), nullptr); return v; }
     bool ReadRaw(uintptr_t a, void* b, size_t n) const { return ReadProcessMemory(handle, (LPCVOID)a, b, n, nullptr) == TRUE; }
+    
     uintptr_t GetListEntity(uintptr_t lb, int i) const {
         uintptr_t c = Read<uintptr_t>(lb + 8 * ((i & 0x7FFF) >> 9) + 16);
         return c ? Read<uintptr_t>(c + 120 * (i & 0x3FF)) : 0;
     }
+    
     bool ReadOriginSmart(uintptr_t sn, Vec3& out) const {
         static const uintptr_t cand[] = { 0xD0, 0x90, 0xC0 };
         for (uintptr_t o : cand) {
@@ -228,6 +368,7 @@ public:
         }
         return false;
     }
+    
     bool ReadBonesSmart(uintptr_t sn, const Vec3& org, float out[64][3][4]) const {
         static const uintptr_t cand[] = { 0x80, 0x1E0, 0x160 };
         for (uintptr_t o : cand) {
@@ -241,26 +382,29 @@ public:
         }
         return false;
     }
+    
     bool ReadAngles(Vec3& out) const {
-        Vec3 a = Read<Vec3>(clientBase + DW_VIEW_ANGLES);
+        Vec3 a = Read<Vec3>(clientBase + g_Offsets.dwViewAngles);
         if (std::isfinite(a.x) && std::isfinite(a.y) && fabsf(a.x) <= 90.f && fabsf(a.y) <= 360.f) { out = a; return true; }
-        uintptr_t p = Read<uintptr_t>(clientBase + DW_VIEW_ANGLES);
+        uintptr_t p = Read<uintptr_t>(clientBase + g_Offsets.dwViewAngles);
         if (p) { a = Read<Vec3>(p); if (std::isfinite(a.x) && std::isfinite(a.y) && fabsf(a.x) <= 90.f && fabsf(a.y) <= 360.f) { out = a; return true; } }
         return false;
     }
+    
     float ReadSens() const {
-        uintptr_t p = Read<uintptr_t>(clientBase + DW_SENSITIVITY);
-        if (p) { float v = Read<float>(p + DW_SENS_OFF); if (std::isfinite(v) && v > 0.05f && v < 20.f) return v; }
-        float v2 = Read<float>(clientBase + DW_SENSITIVITY);
+        uintptr_t p = Read<uintptr_t>(clientBase + g_Offsets.dwSensitivity);
+        if (p) { float v = Read<float>(p + g_Offsets.dwSensOffset); if (std::isfinite(v) && v > 0.05f && v < 20.f) return v; }
+        float v2 = Read<float>(clientBase + g_Offsets.dwSensitivity);
         if (std::isfinite(v2) && v2 > 0.05f && v2 < 20.f) return v2;
         return -1.f;
     }
+    
     bool ReadVisible(uintptr_t pawn, int localIndex, bool& out) const {
         if (localIndex < 0 || localIndex > 63) return false;
-        uint8_t spotted = Read<uint8_t>(pawn + M_ENTITY_SPOTTED_STATE + 8);
+        uint8_t spotted = Read<uint8_t>(pawn + g_Offsets.m_entitySpottedState + 8);
         if (spotted > 1) return false;
-        uint32_t m0 = Read<uint32_t>(pawn + M_ENTITY_SPOTTED_STATE + 12);
-        uint32_t m1 = Read<uint32_t>(pawn + M_ENTITY_SPOTTED_STATE + 16);
+        uint32_t m0 = Read<uint32_t>(pawn + g_Offsets.m_entitySpottedState + 12);
+        uint32_t m1 = Read<uint32_t>(pawn + g_Offsets.m_entitySpottedState + 16);
         uint64_t mask = ((uint64_t)m1 << 32) | m0;
         out = (mask >> localIndex) & 1ULL;
         return true;
@@ -297,6 +441,14 @@ static void RenderMenu() {
     g_MenuSize = ImGui::GetWindowSize();
     
     ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "Правый Shift - меню | v%s", CURRENT_VERSION);
+    
+    // Показываем статус дампинга
+    if (g_Offsets.valid) {
+        ImGui::TextColored(ImVec4(0.3f,1,0.3f,1), "Оффсеты: OK (auto-dumped)");
+    } else {
+        ImGui::TextColored(ImVec4(1,0.5f,0.3f,1), "Оффсеты: Fallback");
+    }
+    
     ImGui::Separator();
     if (ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Визуал")) {
@@ -431,7 +583,6 @@ int main() {
         }
         prevMenuKey = menuKeyDown;
 
-        // ДОБАВЛЕНО: вычисление now и aimActive
         DWORD now = GetTickCount();
         int vk = KEY_VKS[g.aimKeyIdx];
         bool keyDown = (vk == 0) ? true : (GetAsyncKeyState(vk) & 0x8000) != 0;
@@ -449,13 +600,14 @@ int main() {
         if (sens <= 0.f) sens = g.sensOverride;
         usedSens = sens;
 
-        uintptr_t el = mem.Read<uintptr_t>(mem.clientBase + DW_ENTITY_LIST);
-        uintptr_t lp = mem.Read<uintptr_t>(mem.clientBase + DW_LOCAL_PLAYER_PAWN);
-        int lt = lp ? mem.Read<int>(lp + M_I_TEAM_NUM) : 0;
+        // ИСПОЛЬЗУЕМ НАЙДЕННЫЕ ОФФСЕТЫ
+        uintptr_t el = mem.Read<uintptr_t>(mem.clientBase + g_Offsets.dwEntityList);
+        uintptr_t lp = mem.Read<uintptr_t>(mem.clientBase + g_Offsets.dwLocalPlayerPawn);
+        int lt = lp ? mem.Read<int>(lp + g_Offsets.m_iTeamNum) : 0;
         Vec3 lo{};
-        if (lp) { uintptr_t ls = mem.Read<uintptr_t>(lp + M_P_GAME_SCENE_NODE); if (ls) mem.ReadOriginSmart(ls, lo); }
+        if (lp) { uintptr_t ls = mem.Read<uintptr_t>(lp + g_Offsets.m_pGameSceneNode); if (ls) mem.ReadOriginSmart(ls, lo); }
         Vec3 eye{ lo.x, lo.y, lo.z + g.eyeHeight };
-        Mat4 vm = mem.Read<Mat4>(mem.clientBase + DW_VIEW_MATRIX);
+        Mat4 vm = mem.Read<Mat4>(mem.clientBase + g_Offsets.dwViewMatrix);
         bool needBones = g.skeleton || g.aimEnabled || g.trigEnabled;
         g_VisOk = false; localIndex = -1;
 
@@ -467,15 +619,15 @@ int main() {
                 uintptr_t pw = 0;
                 bool isBot = false;
 
-                uint32_t ph = mem.Read<uint32_t>(entity + M_H_PLAYER_PAWN);
+                uint32_t ph = mem.Read<uint32_t>(entity + g_Offsets.m_hPlayerPawn);
                 if (ph) {
                     pw = mem.GetListEntity(el, ph & 0x7FFF);
                 }
 
                 if (!pw) {
-                    int testHP = mem.Read<int>(entity + M_I_HEALTH);
+                    int testHP = mem.Read<int>(entity + g_Offsets.m_iHealth);
                     if (testHP > 0 && testHP <= 100) {
-                        uintptr_t testSN = mem.Read<uintptr_t>(entity + M_P_GAME_SCENE_NODE);
+                        uintptr_t testSN = mem.Read<uintptr_t>(entity + g_Offsets.m_pGameSceneNode);
                         if (testSN) {
                             pw = entity;
                             isBot = true;
@@ -486,15 +638,15 @@ int main() {
                 if (!pw) continue;
                 if (pw == lp) { localIndex = i; continue; }
 
-                int hp = mem.Read<int>(pw + M_I_HEALTH);
+                int hp = mem.Read<int>(pw + g_Offsets.m_iHealth);
                 if (hp <= 0 || hp > 100) continue;
 
-                int tm = mem.Read<int>(pw + M_I_TEAM_NUM);
+                int tm = mem.Read<int>(pw + g_Offsets.m_iTeamNum);
                 if (!g.showTeam && tm == lt) continue;
 
                 if (isBot && !g.showBots) continue;
 
-                uintptr_t sn = mem.Read<uintptr_t>(pw + M_P_GAME_SCENE_NODE);
+                uintptr_t sn = mem.Read<uintptr_t>(pw + g_Offsets.m_pGameSceneNode);
                 if (!sn) continue;
                 PInfo p{}; p.pawn = pw; p.hp = hp; p.visible = true;
                 if (!mem.ReadOriginSmart(sn, p.origin)) continue;
