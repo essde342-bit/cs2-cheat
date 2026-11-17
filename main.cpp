@@ -26,7 +26,6 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 #define CURRENT_VERSION "2.0.0"
 #define VERSION_URL "https://raw.githubusercontent.com/essde342-bit/cs2-cheat/main/version.json"
 
-// Структура для хранения найденных оффсетов
 struct DumpedOffsets {
     uintptr_t dwEntityList = 0;
     uintptr_t dwLocalPlayerPawn = 0;
@@ -34,18 +33,15 @@ struct DumpedOffsets {
     uintptr_t dwViewAngles = 0;
     uintptr_t dwSensitivity = 0;
     uintptr_t dwSensOffset = 0x58;
-    
     uintptr_t m_hPlayerPawn = 0x92C;
     uintptr_t m_iHealth = 0x344;
     uintptr_t m_iTeamNum = 0x3E3;
     uintptr_t m_pGameSceneNode = 0x328;
     uintptr_t m_entitySpottedState = 0x1438;
-    
     bool valid = false;
 };
 
 static DumpedOffsets g_Offsets;
-
 static const float PI = 3.14159265358979f;
 static const float R2D = 180.f / PI;
 
@@ -89,63 +85,26 @@ static HWND g_OverlayWnd = nullptr;
 static std::string g_CfgPath;
 static bool g_VisOk = false;
 
-// ============================================
-// OFFSET DUMPER - Signature Scanning
-// ============================================
-
 class OffsetDumper {
 public:
     static bool ScanModule(HANDLE hProcess, uintptr_t moduleBase, size_t moduleSize) {
         std::cout << "[*] Starting offset dump...\n";
-        
-        // Сигнатуры для глобальных оффсетов CS2
-        // Формат: { сигнатура, маска, тип оффсета, offset_from_pattern }
-        struct Signature {
-            const char* pattern;
-            const char* mask;
-            int type; // 1=EntityList, 2=LocalPlayer, 3=ViewMatrix, 4=ViewAngles, 5=Sensitivity
-            int offset;
-        };
-        
-        // Сигнатуры из cs2-dumper patterns
+        struct Signature { const char* pattern; const char* mask; int type; int offset; };
         std::vector<Signature> signatures = {
-            // dwEntityList: 48 8B 0D ? ? ? ? 48 89 7C 24
             {"\x48\x8B\x0D\x00\x00\x00\x00\x48\x89\x7C\x24", "xxx????xxxx", 1, 3},
-            
-            // dwLocalPlayerPawn: 48 8B 05 ? ? ? ? 48 85 C0 74 ? 8B 88
             {"\x48\x8B\x05\x00\x00\x00\x00\x48\x85\xC0\x74\x00\x8B\x88", "xxx????xxxx?xx", 2, 3},
-            
-            // dwViewMatrix: 48 8D 0D ? ? ? ? 48 C1 E0 06
             {"\x48\x8D\x0D\x00\x00\x00\x00\x48\xC1\xE0\x06", "xxx????xxxx", 3, 3},
-            
-            // dwViewAngles: 48 8B 0D ? ? ? ? E8 ? ? ? ? F3 0F 10 05
             {"\x48\x8B\x0D\x00\x00\x00\x00\xE8\x00\x00\x00\x00\xF3\x0F\x10\x05", "xxx????x????xxxx", 4, 3},
-            
-            // dwSensitivity: 48 8B 05 ? ? ? ? F3 0F 10 88 ? ? ? ?
             {"\x48\x8B\x05\x00\x00\x00\x00\xF3\x0F\x10\x88\x00\x00\x00\x00", "xxx????xxxx????", 5, 3}
         };
-        
-        // Читаем весь модуль в память
         std::vector<uint8_t> moduleData(moduleSize);
         SIZE_T bytesRead;
-        if (!ReadProcessMemory(hProcess, (LPCVOID)moduleBase, moduleData.data(), moduleSize, &bytesRead)) {
-            std::cout << "[!] Failed to read module memory\n";
-            return false;
-        }
-        
-        // Сканируем на сигнатуры
+        if (!ReadProcessMemory(hProcess, (LPCVOID)moduleBase, moduleData.data(), moduleSize, &bytesRead)) return false;
         for (const auto& sig : signatures) {
             uintptr_t found = FindPattern(moduleData.data(), moduleSize, sig.pattern, sig.mask);
             if (found) {
-                // Извлекаем relative offset из паттерна (обычно 3-7 байт после опкода)
                 int32_t relativeOffset = *(int32_t*)(moduleData.data() + found + sig.offset);
-                
-                // Вычисляем абсолютный адрес: next_instruction + relative_offset
-                uintptr_t absoluteAddr = moduleBase + found + sig.offset + 4 + relativeOffset;
-                
-                // Для некоторых оффсетов нужно dereference pointer
-                uintptr_t finalOffset = absoluteAddr - moduleBase;
-                
+                uintptr_t finalOffset = moduleBase + found + sig.offset + 4 + relativeOffset - moduleBase;
                 switch (sig.type) {
                     case 1: g_Offsets.dwEntityList = finalOffset; break;
                     case 2: g_Offsets.dwLocalPlayerPawn = finalOffset; break;
@@ -153,57 +112,35 @@ public:
                     case 4: g_Offsets.dwViewAngles = finalOffset; break;
                     case 5: g_Offsets.dwSensitivity = finalOffset; break;
                 }
-                
                 std::cout << "[+] Found offset type " << sig.type << " at 0x" << std::hex << finalOffset << std::dec << "\n";
-            } else {
-                std::cout << "[!] Pattern not found for type " << sig.type << "\n";
             }
         }
-        
-        // Проверяем что нашли хотя бы основные оффсеты
         g_Offsets.valid = (g_Offsets.dwEntityList != 0 && g_Offsets.dwLocalPlayerPawn != 0);
-        
         if (g_Offsets.valid) {
             std::cout << "[+] Offset dump successful!\n";
-            std::cout << "    dwEntityList: 0x" << std::hex << g_Offsets.dwEntityList << std::dec << "\n";
-            std::cout << "    dwLocalPlayerPawn: 0x" << std::hex << g_Offsets.dwLocalPlayerPawn << std::dec << "\n";
-            std::cout << "    dwViewMatrix: 0x" << std::hex << g_Offsets.dwViewMatrix << std::dec << "\n";
-            std::cout << "    dwViewAngles: 0x" << std::hex << g_Offsets.dwViewAngles << std::dec << "\n";
-            std::cout << "    dwSensitivity: 0x" << std::hex << g_Offsets.dwSensitivity << std::dec << "\n";
         } else {
             std::cout << "[!] Offset dump failed - using fallback values\n";
-            // Fallback на захардкоженные значения
             g_Offsets.dwEntityList = 0x2709010;
             g_Offsets.dwLocalPlayerPawn = 0x2553D38;
             g_Offsets.dwViewMatrix = 0x2559640;
             g_Offsets.dwViewAngles = 0x256A4B8;
             g_Offsets.dwSensitivity = 0x2551038;
         }
-        
         return g_Offsets.valid;
     }
-    
 private:
     static uintptr_t FindPattern(const uint8_t* data, size_t size, const char* pattern, const char* mask) {
         size_t patternLen = strlen(mask);
-        
         for (size_t i = 0; i <= size - patternLen; i++) {
             bool found = true;
             for (size_t j = 0; j < patternLen; j++) {
-                if (mask[j] != '?' && pattern[j] != data[i + j]) {
-                    found = false;
-                    break;
-                }
+                if (mask[j] != '?' && pattern[j] != data[i + j]) { found = false; break; }
             }
             if (found) return i;
         }
         return 0;
     }
 };
-
-// ============================================
-// END OFFSET DUMPER
-// ============================================
 
 static void InitCfgPath() {
     char ad[MAX_PATH]; GetEnvironmentVariableA("APPDATA", ad, MAX_PATH);
@@ -289,12 +226,26 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-static void SetClickThrough(HWND h, bool passClicks) {
-    LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-    LONG_PTR newEx = passClicks ? (ex | WS_EX_TRANSPARENT) : (ex & ~WS_EX_TRANSPARENT);
-    if (newEx != ex) {
-        SetWindowLongPtrW(h, GWL_EXSTYLE, newEx);
-        SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+// ИСПРАВЛЕННАЯ ФУНКЦИЯ: используем per-pixel hitbox
+static void UpdateHitbox(bool mouseOverMenu, bool menuOpen) {
+    if (!menuOpen) {
+        // Меню закрыто - всё окно пропускает клики
+        SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, 
+            GetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+        SetLayeredWindowAttributes(g_OverlayWnd, 0, 255, LWA_ALPHA);
+    } else {
+        // Меню открыто - ловим клики только на меню
+        LONG_PTR ex = GetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE);
+        if (mouseOverMenu) {
+            // Мышь над меню - убираем TRANSPARENT, ловим клики
+            ex &= ~WS_EX_TRANSPARENT;
+            ex |= WS_EX_LAYERED;
+        } else {
+            // Мышь вне меню - добавляем TRANSPARENT, пропускаем клики
+            ex |= WS_EX_TRANSPARENT | WS_EX_LAYERED;
+        }
+        SetWindowLongPtrW(g_OverlayWnd, GWL_EXSTYLE, ex);
+        SetLayeredWindowAttributes(g_OverlayWnd, 0, 255, LWA_ALPHA);
     }
 }
 
@@ -316,7 +267,6 @@ static HWND FindWindowByPid(DWORD p) { WD w{ p, nullptr }; EnumWindows(EWC, (LPA
 class Memory {
 public:
     HANDLE handle = nullptr; uintptr_t clientBase = 0; size_t clientSize = 0;
-    
     bool Init() {
         DWORD pid = FindProcessId("cs2.exe");
         if (!pid) { std::cout << "[!] cs2.exe not found\n"; return false; }
@@ -326,37 +276,25 @@ public:
         if (s != INVALID_HANDLE_VALUE) {
             MODULEENTRY32 me; me.dwSize = sizeof(me);
             if (Module32First(s, &me)) do {
-                if (!_stricmp(me.szModule, "client.dll")) { 
-                    clientBase = (uintptr_t)me.modBaseAddr;
-                    clientSize = me.modBaseSize;
-                    break; 
-                }
+                if (!_stricmp(me.szModule, "client.dll")) { clientBase = (uintptr_t)me.modBaseAddr; clientSize = me.modBaseSize; break; }
             } while (Module32Next(s, &me));
             CloseHandle(s);
         }
         CloseHandle(hq);
         if (!clientBase) { std::cout << "[!] client.dll not found\n"; return false; }
-        
-        // ВАЖНО: открываем с полными правами для дампинга
         handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
         if (!handle) { std::cout << "[!] OpenProcess(read) failed\n"; return false; }
-        
-        // Запускаем дампинг оффсетов
         if (!OffsetDumper::ScanModule(handle, clientBase, clientSize)) {
             std::cout << "[!] Offset dump failed, using fallback\n";
         }
-        
         return true;
     }
-    
     template<typename T> T Read(uintptr_t a) const { T v{}; ReadProcessMemory(handle, (LPCVOID)a, &v, sizeof(T), nullptr); return v; }
     bool ReadRaw(uintptr_t a, void* b, size_t n) const { return ReadProcessMemory(handle, (LPCVOID)a, b, n, nullptr) == TRUE; }
-    
     uintptr_t GetListEntity(uintptr_t lb, int i) const {
         uintptr_t c = Read<uintptr_t>(lb + 8 * ((i & 0x7FFF) >> 9) + 16);
         return c ? Read<uintptr_t>(c + 120 * (i & 0x3FF)) : 0;
     }
-    
     bool ReadOriginSmart(uintptr_t sn, Vec3& out) const {
         static const uintptr_t cand[] = { 0xD0, 0x90, 0xC0 };
         for (uintptr_t o : cand) {
@@ -368,7 +306,6 @@ public:
         }
         return false;
     }
-    
     bool ReadBonesSmart(uintptr_t sn, const Vec3& org, float out[64][3][4]) const {
         static const uintptr_t cand[] = { 0x80, 0x1E0, 0x160 };
         for (uintptr_t o : cand) {
@@ -382,7 +319,6 @@ public:
         }
         return false;
     }
-    
     bool ReadAngles(Vec3& out) const {
         Vec3 a = Read<Vec3>(clientBase + g_Offsets.dwViewAngles);
         if (std::isfinite(a.x) && std::isfinite(a.y) && fabsf(a.x) <= 90.f && fabsf(a.y) <= 360.f) { out = a; return true; }
@@ -390,7 +326,6 @@ public:
         if (p) { a = Read<Vec3>(p); if (std::isfinite(a.x) && std::isfinite(a.y) && fabsf(a.x) <= 90.f && fabsf(a.y) <= 360.f) { out = a; return true; } }
         return false;
     }
-    
     float ReadSens() const {
         uintptr_t p = Read<uintptr_t>(clientBase + g_Offsets.dwSensitivity);
         if (p) { float v = Read<float>(p + g_Offsets.dwSensOffset); if (std::isfinite(v) && v > 0.05f && v < 20.f) return v; }
@@ -398,7 +333,6 @@ public:
         if (std::isfinite(v2) && v2 > 0.05f && v2 < 20.f) return v2;
         return -1.f;
     }
-    
     bool ReadVisible(uintptr_t pawn, int localIndex, bool& out) const {
         if (localIndex < 0 || localIndex > 63) return false;
         uint8_t spotted = Read<uint8_t>(pawn + g_Offsets.m_entitySpottedState + 8);
@@ -436,19 +370,14 @@ static void SliderIHelp(const char* label, int* v, int mn, int mx, const char* h
 static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("Void DLC", &g.menuOpen, ImGuiWindowFlags_NoCollapse);
-    
     g_MenuPos = ImGui::GetWindowPos();
     g_MenuSize = ImGui::GetWindowSize();
-    
     ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "Правый Shift - меню | v%s", CURRENT_VERSION);
-    
-    // Показываем статус дампинга
     if (g_Offsets.valid) {
         ImGui::TextColored(ImVec4(0.3f,1,0.3f,1), "Оффсеты: OK (auto-dumped)");
     } else {
         ImGui::TextColored(ImVec4(1,0.5f,0.3f,1), "Оффсеты: Fallback");
     }
-    
     ImGui::Separator();
     if (ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Визуал")) {
@@ -529,14 +458,16 @@ int main() {
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = cls; RegisterClassExW(&wc);
     
-    g_OverlayWnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    // СОЗДАЁМ ОКНО С WS_EX_LAYERED для per-pixel hitbox
+    g_OverlayWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
     if (!g_OverlayWnd) { system("pause"); return 1; }
+    
+    // Делаем фон прозрачным через alpha=0
+    SetLayeredWindowAttributes(g_OverlayWnd, 0, 0, LWA_ALPHA);
     
     MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(g_OverlayWnd, &mg);
     
     ShowWindow(g_OverlayWnd, SW_SHOW); UpdateWindow(g_OverlayWnd);
-    
-    SetClickThrough(g_OverlayWnd, false);
 
     DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferDesc.RefreshRate = { 60,1 };
@@ -564,7 +495,7 @@ int main() {
 
     const float clear[4] = { 0,0,0,0 };
     static const int kSkel[][2] = { {6,5},{5,4},{4,2},{2,0},{4,8},{8,9},{9,10},{4,13},{13,14},{14,15},{0,22},{22,23},{23,24},{0,25},{25,26},{26,27} };
-    bool lastMenu = g.menuOpen, prevAimKey = false, aimToggled = false, prevMenuKey = false, lastClickThrough = false;
+    bool lastMenu = g.menuOpen, prevAimKey = false, aimToggled = false, prevMenuKey = false;
     uintptr_t lastTarget = 0; DWORD acquireAt = 0;
     bool trigDown = false; DWORD trigUpAt = 0, lastShot = 0;
     float usedSens = 2.5f; int localIndex = -1;
@@ -600,7 +531,6 @@ int main() {
         if (sens <= 0.f) sens = g.sensOverride;
         usedSens = sens;
 
-        // ИСПОЛЬЗУЕМ НАЙДЕННЫЕ ОФФСЕТЫ
         uintptr_t el = mem.Read<uintptr_t>(mem.clientBase + g_Offsets.dwEntityList);
         uintptr_t lp = mem.Read<uintptr_t>(mem.clientBase + g_Offsets.dwLocalPlayerPawn);
         int lt = lp ? mem.Read<int>(lp + g_Offsets.m_iTeamNum) : 0;
@@ -725,6 +655,7 @@ int main() {
         if (g.menuOpen) {
             RenderMenu();
             
+            // ПРОВЕРЯЕМ ПОЗИЦИЮ МЫШИ И ОБНОВЛЯЕМ ХИТБОКС
             POINT mousePos;
             GetCursorPos(&mousePos);
             ScreenToClient(g_OverlayWnd, &mousePos);
@@ -732,16 +663,9 @@ int main() {
             bool mouseOverMenu = (mousePos.x >= g_MenuPos.x && mousePos.x <= g_MenuPos.x + g_MenuSize.x &&
                                   mousePos.y >= g_MenuPos.y && mousePos.y <= g_MenuPos.y + g_MenuSize.y);
             
-            bool shouldPassClicks = !mouseOverMenu;
-            if (shouldPassClicks != lastClickThrough) {
-                SetClickThrough(g_OverlayWnd, shouldPassClicks);
-                lastClickThrough = shouldPassClicks;
-            }
+            UpdateHitbox(mouseOverMenu, g.menuOpen);
         } else {
-            if (!lastClickThrough) {
-                SetClickThrough(g_OverlayWnd, true);
-                lastClickThrough = true;
-            }
+            UpdateHitbox(false, g.menuOpen);
         }
 
         if (g.menuOpen != lastMenu) {
