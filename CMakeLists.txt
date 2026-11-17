@@ -32,6 +32,18 @@ add_executable(CS2ESP main.cpp)
 target_link_libraries(CS2ESP PRIVATE imgui_lib)
 
 if(MSVC)
+    # Жёстко форсируем статический рантайм для ВСЕХ целей
     set_property(TARGET CS2ESP PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set_property(TARGET imgui_lib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    
+    # Убираем конфликт импортов ucrt/msvcrt
+    target_link_options(CS2ESP PRIVATE 
+        /NODEFAULTLIB:msvcrt.lib 
+        /NODEFAULTLIB:libucrt.lib
+        libcmt.lib 
+        libvcruntime.lib 
+        oldnames.lib
+    )
+    
     target_compile_options(CS2ESP PRIVATE /W3 /O2 /utf-8)
 endif()
