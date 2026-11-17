@@ -26,24 +26,17 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 #define CURRENT_VERSION "2.0.0"
 #define VERSION_URL "https://raw.githubusercontent.com/essde342-bit/cs2-cheat/main/version.json"
 
-// verified live from a2x/cs2-dumper offsets.json
 #define DW_ENTITY_LIST        0x2709010
 #define DW_LOCAL_PLAYER_PAWN  0x2553D38
 #define DW_VIEW_MATRIX        0x2559640
 #define DW_VIEW_ANGLES        0x256A4B8
 #define DW_SENSITIVITY        0x2551038
 #define DW_SENS_OFF           0x58
-// verified: CCSPlayerController.m_hPlayerPawn = 2348
 #define M_H_PLAYER_PAWN       0x92C
-// long-stable schema offsets
 #define M_I_HEALTH            0x344
 #define M_I_TEAM_NUM          0x3E3
 #define M_P_GAME_SCENE_NODE   0x328
-// unverified this session; fail-open + HUD indicator if wrong
 #define M_ENTITY_SPOTTED_STATE 0x1438
-
-#define HOTKEY_MENU_ID 1
-#define HOTKEY_MENU_KEY VK_INSERT
 
 static const float PI = 3.14159265358979f;
 static const float R2D = 180.f / PI;
@@ -53,28 +46,27 @@ struct Vec2 { float x, y; };
 struct Mat4 { float m[4][4]; };
 
 struct Settings {
-    // visuals
     bool espEnabled = true, box = true, skeleton = true, healthBar = true, hpText = true;
-    bool snaplines = false, showTeam = false, debugHud = true, fovCircle = true;
+    bool snaplines = false, showTeam = false, debugHud = true, fovCircle = true, showBots = true;
     float maxDistance = 5000.f, boxThickness = 2.f;
     float boxColor[4] = { 1,0,0,1 }, skelColor[4] = { 1,1,1,1 }, snapColor[4] = { 1,1,0,1 };
-    // aim
     bool aimEnabled = false, aimToggle = false, visEnabled = true;
     int aimKeyIdx = 2;
     float aimFov = 5.f, aimSmooth = 8.f, aimJitter = 0.3f;
     int aimReactionMs = 120, aimBoneIdx = 0;
     float eyeHeight = 64.05f;
     bool manualSens = false; float sensOverride = 2.5f;
-    // trigger
     bool trigEnabled = false, trigRequireAimKey = true;
     float trigFov = 1.5f;
     int trigDelayMs = 80, trigCooldownMs = 120, trigHoldMs = 40;
-    // runtime
+    int menuKeyIdx = 5;
     bool menuOpen = true;
 };
 
 static const char* KEY_NAMES[] = { "Всегда", "Mouse4", "Mouse5", "Alt", "Shift", "Ctrl", "CapsLock" };
 static const int KEY_VKS[] = { 0, VK_XBUTTON1, VK_XBUTTON2, VK_MENU, VK_SHIFT, VK_CONTROL, VK_CAPITAL };
+static const char* MENU_KEY_NAMES[] = { "Правый Shift", "Правый Ctrl", "Правый Alt", "Insert", "Home", "End", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12" };
+static const int MENU_KEY_VKS[] = { VK_RSHIFT, VK_RCONTROL, VK_RMENU, VK_INSERT, VK_HOME, VK_END, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12 };
 static const char* BONE_NAMES[] = { "Голова", "Шея", "Грудь", "Таз" };
 static const int BONE_IDS[] = { 6, 5, 4, 0 };
 
@@ -88,7 +80,6 @@ static HWND g_GameWnd = nullptr;
 static std::string g_CfgPath;
 static bool g_VisOk = false;
 
-// ---------------- config (INI via WinAPI) ----------------
 static void InitCfgPath() {
     char ad[MAX_PATH]; GetEnvironmentVariableA("APPDATA", ad, MAX_PATH);
     std::string dir = std::string(ad) + "\\VoidDLC";
@@ -107,7 +98,7 @@ static void SaveConfig() {
     WF("vis", "maxdist", g.maxDistance); WF("vis", "boxthick", g.boxThickness);
     WI("vis", "esp", g.espEnabled); WI("vis", "box", g.box); WI("vis", "skel", g.skeleton);
     WI("vis", "hpbar", g.healthBar); WI("vis", "hptext", g.hpText); WI("vis", "snap", g.snaplines);
-    WI("vis", "team", g.showTeam); WI("vis", "hud", g.debugHud); WI("vis", "fovc", g.fovCircle);
+    WI("vis", "team", g.showTeam); WI("vis", "bots", g.showBots); WI("vis", "hud", g.debugHud); WI("vis", "fovc", g.fovCircle);
     WC("vis", "boxcol", g.boxColor); WC("vis", "skelcol", g.skelColor); WC("vis", "snapcol", g.snapColor);
     WI("aim", "on", g.aimEnabled); WI("aim", "toggle", g.aimToggle); WI("aim", "key", g.aimKeyIdx);
     WI("aim", "vis", g.visEnabled);
@@ -117,12 +108,13 @@ static void SaveConfig() {
     WI("trig", "on", g.trigEnabled); WI("trig", "reqkey", g.trigRequireAimKey);
     WF("trig", "fov", g.trigFov); WI("trig", "delay", g.trigDelayMs);
     WI("trig", "cool", g.trigCooldownMs); WI("trig", "hold", g.trigHoldMs);
+    WI("menu", "key", g.menuKeyIdx);
 }
 static void LoadConfig() {
     g.maxDistance = RF("vis", "maxdist", g.maxDistance); g.boxThickness = RF("vis", "boxthick", g.boxThickness);
     g.espEnabled = RI("vis", "esp", g.espEnabled); g.box = RI("vis", "box", g.box); g.skeleton = RI("vis", "skel", g.skeleton);
     g.healthBar = RI("vis", "hpbar", g.healthBar); g.hpText = RI("vis", "hptext", g.hpText); g.snaplines = RI("vis", "snap", g.snaplines);
-    g.showTeam = RI("vis", "team", g.showTeam); g.debugHud = RI("vis", "hud", g.debugHud); g.fovCircle = RI("vis", "fovc", g.fovCircle);
+    g.showTeam = RI("vis", "team", g.showTeam); g.showBots = RI("vis", "bots", g.showBots); g.debugHud = RI("vis", "hud", g.debugHud); g.fovCircle = RI("vis", "fovc", g.fovCircle);
     RC("vis", "boxcol", g.boxColor); RC("vis", "skelcol", g.skelColor); RC("vis", "snapcol", g.snapColor);
     g.aimEnabled = RI("aim", "on", g.aimEnabled); g.aimToggle = RI("aim", "toggle", g.aimToggle); g.aimKeyIdx = RI("aim", "key", g.aimKeyIdx);
     g.visEnabled = RI("aim", "vis", g.visEnabled);
@@ -132,8 +124,10 @@ static void LoadConfig() {
     g.trigEnabled = RI("trig", "on", g.trigEnabled); g.trigRequireAimKey = RI("trig", "reqkey", g.trigRequireAimKey);
     g.trigFov = RF("trig", "fov", g.trigFov); g.trigDelayMs = RI("trig", "delay", g.trigDelayMs);
     g.trigCooldownMs = RI("trig", "cool", g.trigCooldownMs); g.trigHoldMs = RI("trig", "hold", g.trigHoldMs);
+    g.menuKeyIdx = RI("menu", "key", g.menuKeyIdx);
     if (g.aimKeyIdx < 0 || g.aimKeyIdx > 6) g.aimKeyIdx = 2;
     if (g.aimBoneIdx < 0 || g.aimBoneIdx > 3) g.aimBoneIdx = 0;
+    if (g.menuKeyIdx < 0 || g.menuKeyIdx >= (int)(sizeof(MENU_KEY_VKS)/sizeof(MENU_KEY_VKS[0]))) g.menuKeyIdx = 0;
 }
 static void Preset(int mode) {
     if (mode == 0) { g.aimFov = 3; g.aimSmooth = 12; g.aimJitter = 0.4f; g.aimReactionMs = 180; g.aimBoneIdx = 1; g.visEnabled = true; g.trigFov = 1.0f; g.trigDelayMs = 120; g.trigCooldownMs = 200; }
@@ -141,7 +135,6 @@ static void Preset(int mode) {
     else { g.aimFov = 15; g.aimSmooth = 3; g.aimJitter = 0.1f; g.aimReactionMs = 40; g.aimBoneIdx = 0; g.visEnabled = false; g.trigFov = 3; g.trigDelayMs = 30; g.trigCooldownMs = 80; }
 }
 
-// ---------------- version check ----------------
 static std::string ExtractJsonString(const std::string& j, const std::string& k) {
     size_t p = j.find("\"" + k + "\""); if (p == std::string::npos) return "";
     p = j.find(':', p); if (p == std::string::npos) return "";
@@ -160,7 +153,6 @@ static bool CheckPayloadVersion() {
     return rv.empty() || rv == CURRENT_VERSION;
 }
 
-// ---------------- overlay window ----------------
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return 1;
     if (m == WM_DESTROY) { PostQuitMessage(0); return 0; }
@@ -193,7 +185,6 @@ static BOOL CALLBACK EWC(HWND h, LPARAM l) {
 }
 static HWND FindWindowByPid(DWORD p) { WD w{ p, nullptr }; EnumWindows(EWC, (LPARAM)&w); return w.hwnd; }
 
-// ---------------- memory (read-only) ----------------
 class Memory {
 public:
     HANDLE handle = nullptr; uintptr_t clientBase = 0;
@@ -260,11 +251,10 @@ public:
         if (std::isfinite(v2) && v2 > 0.05f && v2 < 20.f) return v2;
         return -1.f;
     }
-    // visible = local player's bit in enemy's radar LOS mask
     bool ReadVisible(uintptr_t pawn, int localIndex, bool& out) const {
         if (localIndex < 0 || localIndex > 63) return false;
         uint8_t spotted = Read<uint8_t>(pawn + M_ENTITY_SPOTTED_STATE + 8);
-        if (spotted > 1) return false; // offset wrong -> invalid
+        if (spotted > 1) return false;
         uint32_t m0 = Read<uint32_t>(pawn + M_ENTITY_SPOTTED_STATE + 12);
         uint32_t m1 = Read<uint32_t>(pawn + M_ENTITY_SPOTTED_STATE + 16);
         uint64_t mask = ((uint64_t)m1 << 32) | m0;
@@ -288,7 +278,6 @@ struct PInfo {
     Vec2 sHead, sFeet; bool hasBones, visible; float bones[64][3][4]; int hp;
 };
 
-// ---------------- beginner-friendly menu ----------------
 static void Help(const char* txt) {
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered()) { ImGui::BeginTooltip(); ImGui::PushTextWrapPos(300); ImGui::TextUnformatted(txt); ImGui::PopTextWrapPos(); ImGui::EndTooltip(); }
@@ -299,7 +288,7 @@ static void SliderIHelp(const char* label, int* v, int mn, int mx, const char* h
 static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("Void DLC", &g.menuOpen, ImGuiWindowFlags_NoCollapse);
-    ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "INSERT - меню | v%s", CURRENT_VERSION);
+    ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "%s - меню | v%s", MENU_KEY_NAMES[g.menuKeyIdx], CURRENT_VERSION);
     ImGui::Separator();
     if (ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Визуал")) {
@@ -314,6 +303,7 @@ static void RenderMenu() {
             if (g.snaplines) { ImGui::Indent(16); ImGui::ColorEdit4("Цвет линий", g.snapColor, ImGuiColorEditFlags_NoInputs); ImGui::Unindent(16); }
             ImGui::Separator();
             ImGui::Checkbox("Показывать своих", &g.showTeam);
+            ImGui::Checkbox("Показывать ботов", &g.showBots); ImGui::SameLine(); Help("Включает ESP на ботов. Работает и на игроков, и на ботов одновременно.");
             SliderFHelp("Дистанция (0=все)", &g.maxDistance, 0, 10000, "%.0f", "Дальше этого расстояния враги не рисуются. 0 = без ограничения.");
             ImGui::Checkbox("Служебная строка (HUD)", &g.debugHud);
             ImGui::Checkbox("Круг FOV аима", &g.fovCircle);
@@ -329,7 +319,7 @@ static void RenderMenu() {
             SliderFHelp("Дрожание", &g.aimJitter, 0, 1.5f, "%.2f", "Мелкая случайная тряска прицела, чтобы движение не было идеальным.");
             SliderIHelp("Задержка реакции (мс)", &g.aimReactionMs, 0, 350, "Пауза перед началом наводки на новую цель, как у человека.");
             ImGui::Separator();
-            ImGui::Checkbox("Только видимые враги (vis check)", &g.visEnabled); ImGui::SameLine(); Help("Аим берёт цель только если ты её реально видишь (игра сама помечает это для радара). Если в HUD vis:n/a - оффсет съехал, фильтр отключается автоматически.");
+            ImGui::Checkbox("Только видимые враги (vis check)", &g.visEnabled); ImGui::SameLine(); Help("Аим берёт цель только если ты её реально видишь. Если в HUD vis:n/a - фильтр отключается автоматически.");
             ImGui::Separator();
             SliderFHelp("Высота глаз", &g.eyeHeight, 40, 72, "%.1f", "Стоя ~64, сидя ~46. Влияет на вертикальную наводку.");
             ImGui::Checkbox("Своя чувствительность", &g.manualSens);
@@ -352,6 +342,9 @@ static void RenderMenu() {
             if (ImGui::Button("Balanced", ImVec2(110, 30))) Preset(1); ImGui::SameLine(); Help("Среднее между незаметностью и скоростью.");
             if (ImGui::Button("Rage (быстро)", ImVec2(120, 30))) Preset(2); ImGui::SameLine(); Help("Быстро и резко, большой радиус. Заметно, для дезматча/ботов.");
             ImGui::Separator();
+            ImGui::TextUnformatted("Кнопка меню:");
+            ImGui::Combo("##menukey", &g.menuKeyIdx, MENU_KEY_NAMES, IM_ARRAYSIZE(MENU_KEY_NAMES)); ImGui::SameLine(); Help("Кнопка для открытия/закрытия этого меню. Правый Shift по умолчанию.");
+            ImGui::Separator();
             if (ImGui::Button("Сохранить", ImVec2(180, 30))) SaveConfig(); ImGui::SameLine();
             if (ImGui::Button("Загрузить", ImVec2(180, 30))) LoadConfig();
             ImGui::Spacing();
@@ -364,7 +357,6 @@ static void RenderMenu() {
     ImGui::End();
 }
 
-// ---------------- main ----------------
 int main() {
     SetConsoleTitleA("console");
     srand(GetTickCount());
@@ -384,7 +376,6 @@ int main() {
     if (!hwnd) { system("pause"); return 1; }
     MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(hwnd, &mg);
     ShowWindow(hwnd, SW_SHOW); UpdateWindow(hwnd);
-    RegisterHotKey(nullptr, HOTKEY_MENU_ID, MOD_NOREPEAT, HOTKEY_MENU_KEY);
 
     DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferDesc.RefreshRate = { 60,1 };
@@ -410,12 +401,11 @@ int main() {
     pst.Colors[ImGuiCol_CheckMark] = ImVec4(0.35f, 0.62f, 1.0f, 1);
     ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(g_Device, g_Context);
 
-    // DIAGNOSTIC: если окно создалось - покажем MessageBox
     MessageBoxA(hwnd, "Окно создано. Нажми OK чтобы продолжить.\nЕсли это окно не появилось - проблема на уровне окна, не чит.", "Void DLC - Проверка", MB_OK | MB_ICONINFORMATION);
 
     const float clear[4] = { 0,0,0,0 };
     static const int kSkel[][2] = { {6,5},{5,4},{4,2},{2,0},{4,8},{8,9},{9,10},{4,13},{13,14},{14,15},{0,22},{22,23},{23,24},{0,25},{25,26},{26,27} };
-    bool lastMenu = false, prevAimKey = false, aimToggled = false;
+    bool lastMenu = false, prevAimKey = false, aimToggled = false, prevMenuKey = false;
     uintptr_t lastTarget = 0; DWORD acquireAt = 0;
     bool trigDown = false; DWORD trigUpAt = 0, lastShot = 0;
     float usedSens = 2.5f; int localIndex = -1;
@@ -425,9 +415,14 @@ int main() {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg); DispatchMessageW(&msg);
             if (msg.message == WM_QUIT) g_Running = false;
-            if (msg.message == WM_HOTKEY && msg.wParam == HOTKEY_MENU_ID) g.menuOpen = !g.menuOpen;
         }
         if (!g_Running) break;
+
+        int menuVK = MENU_KEY_VKS[g.menuKeyIdx];
+        bool menuKeyDown = (GetAsyncKeyState(menuVK) & 0x8000) != 0;
+        if (menuKeyDown && !prevMenuKey) g.menuOpen = !g.menuOpen;
+        prevMenuKey = menuKeyDown;
+
         if (g.menuOpen != lastMenu) { SetClickThrough(hwnd, !g.menuOpen); lastMenu = g.menuOpen; }
 
         DWORD now = GetTickCount();
@@ -459,21 +454,49 @@ int main() {
         g_VisOk = false; localIndex = -1;
 
         if (g.espEnabled || g.aimEnabled || g.trigEnabled) {
-            for (int i = 1; i <= 64; ++i) {
-                uintptr_t ctl = mem.GetListEntity(el, i); if (!ctl) continue;
-                uint32_t ph = mem.Read<uint32_t>(ctl + M_H_PLAYER_PAWN); if (!ph) continue;
-                uintptr_t pw = mem.GetListEntity(el, ph & 0x7FFF); if (!pw) continue;
+            for (int i = 1; i <= 128; ++i) {
+                uintptr_t entity = mem.GetListEntity(el, i);
+                if (!entity) continue;
+
+                uintptr_t pw = 0;
+                bool isBot = false;
+
+                // Попробовать как controller (игрок)
+                uint32_t ph = mem.Read<uint32_t>(entity + M_H_PLAYER_PAWN);
+                if (ph) {
+                    pw = mem.GetListEntity(el, ph & 0x7FFF);
+                }
+
+                // Если не получилось - попробовать как прямой pawn (бот)
+                if (!pw) {
+                    int testHP = mem.Read<int>(entity + M_I_HEALTH);
+                    if (testHP > 0 && testHP <= 100) {
+                        pw = entity;
+                        isBot = true;
+                    }
+                }
+
+                if (!pw) continue;
                 if (pw == lp) { localIndex = i; continue; }
-                int hp = mem.Read<int>(pw + M_I_HEALTH); if (hp <= 0 || hp > 100) continue;
-                int tm = mem.Read<int>(pw + M_I_TEAM_NUM); if (!g.showTeam && tm == lt) continue;
-                uintptr_t sn = mem.Read<uintptr_t>(pw + M_P_GAME_SCENE_NODE); if (!sn) continue;
+
+                int hp = mem.Read<int>(pw + M_I_HEALTH);
+                if (hp <= 0 || hp > 100) continue;
+
+                int tm = mem.Read<int>(pw + M_I_TEAM_NUM);
+                if (!g.showTeam && tm == lt) continue;
+
+                // Пропустить ботов если выключено
+                if (isBot && !g.showBots) continue;
+
+                uintptr_t sn = mem.Read<uintptr_t>(pw + M_P_GAME_SCENE_NODE);
+                if (!sn) continue;
                 PInfo p{}; p.pawn = pw; p.hp = hp; p.visible = true;
                 if (!mem.ReadOriginSmart(sn, p.origin)) continue;
                 if (g.maxDistance > 0) {
                     float dx = p.origin.x-lo.x, dy = p.origin.y-lo.y, dz = p.origin.z-lo.z;
                     if (sqrtf(dx*dx+dy*dy+dz*dz) > g.maxDistance) continue;
                 }
-                if (g.visEnabled) { bool ok = mem.ReadVisible(pw, localIndex, p.visible); if (ok) g_VisOk = true; }
+                if (g.visEnabled && !isBot) { bool ok = mem.ReadVisible(pw, localIndex, p.visible); if (ok) g_VisOk = true; }
                 p.hasBones = needBones ? mem.ReadBonesSmart(sn, p.origin, p.bones) : false;
                 int bid = BONE_IDS[g.aimBoneIdx];
                 p.bonePos = p.hasBones ? Vec3{ p.bones[bid][0][3], p.bones[bid][1][3], p.bones[bid][2][3] }
@@ -545,9 +568,9 @@ int main() {
         if (g.aimEnabled && g.fovCircle) { float r = (g.aimFov / 90.f) * (winH * 0.5f); dl->AddCircle(ImVec2(winW*0.5f, winH*0.5f), r, IM_COL32(255,255,255,60), 48, 1.f); }
         if (g.debugHud) {
             char dbg[160];
-            sprintf_s(dbg, "Void v%s | drawn:%d | sens:%.2f | vis:%s | aim:%s | tgt:%s",
+            sprintf_s(dbg, "Void v%s | drawn:%d | sens:%.2f | vis:%s | aim:%s | tgt:%s | menu:%s",
                 CURRENT_VERSION, drawn, usedSens, g_VisOk ? "ok" : "n/a",
-                (g.aimEnabled && aimActive) ? "ON" : "off", target ? "yes" : "no");
+                (g.aimEnabled && aimActive) ? "ON" : "off", target ? "yes" : "no", MENU_KEY_NAMES[g.menuKeyIdx]);
             dl->AddText(ImVec2(8, 8), IM_COL32(0,255,128,200), dbg);
         }
 
@@ -561,7 +584,6 @@ int main() {
     }
 
     SaveConfig();
-    UnregisterHotKey(nullptr, HOTKEY_MENU_ID);
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     if (g_RTV) g_RTV->Release(); if (g_SwapChain) g_SwapChain->Release();
     if (g_Context) g_Context->Release(); if (g_Device) g_Device->Release();
