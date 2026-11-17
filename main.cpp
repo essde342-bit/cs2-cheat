@@ -45,7 +45,6 @@ struct Vec3 { float x, y, z; };
 struct Vec2 { float x, y; };
 struct Mat4 { float m[4][4]; };
 
-// Глобальные переменные для позиции меню
 static ImVec2 g_MenuPos(0, 0);
 static ImVec2 g_MenuSize(0, 0);
 
@@ -145,7 +144,8 @@ static bool CheckPayloadVersion() {
     char t[MAX_PATH]; GetTempPathA(MAX_PATH, t);
     std::string path = std::string(t) + "void_chk.json";
     if (FAILED(URLDownloadToFileA(nullptr, VERSION_URL, path.c_str(), 0, nullptr))) return true;
-    FILE* f = fopen(path.c_str(), "rb"); if (!f) return true;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return true;
     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
     std::string buf(sz, '\0'); fread(&buf[0], 1, sz, f); fclose(f); DeleteFileA(path.c_str());
     std::string rv = ExtractJsonString(buf, "version");
@@ -293,7 +293,6 @@ static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("Void DLC", &g.menuOpen, ImGuiWindowFlags_NoCollapse);
     
-    // Сохраняем позицию и размер меню через публичное API
     g_MenuPos = ImGui::GetWindowPos();
     g_MenuSize = ImGui::GetWindowSize();
     
@@ -432,6 +431,15 @@ int main() {
         }
         prevMenuKey = menuKeyDown;
 
+        // ДОБАВЛЕНО: вычисление now и aimActive
+        DWORD now = GetTickCount();
+        int vk = KEY_VKS[g.aimKeyIdx];
+        bool keyDown = (vk == 0) ? true : (GetAsyncKeyState(vk) & 0x8000) != 0;
+        bool aimActive;
+        if (g.aimToggle && vk != 0) { if (keyDown && !prevAimKey) aimToggled = !aimToggled; aimActive = aimToggled; }
+        else aimActive = keyDown;
+        prevAimKey = keyDown;
+
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
         auto* dl = ImGui::GetBackgroundDrawList();
 
@@ -565,7 +573,6 @@ int main() {
         if (g.menuOpen) {
             RenderMenu();
             
-            // Динамический хитбокс: проверяем позицию мыши
             POINT mousePos;
             GetCursorPos(&mousePos);
             ScreenToClient(g_OverlayWnd, &mousePos);
