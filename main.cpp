@@ -70,7 +70,7 @@ struct Settings {
     float trigFov = 1.5f;
     int trigDelayMs = 80, trigCooldownMs = 120, trigHoldMs = 40;
     // runtime
-    bool menuOpen = false;
+    bool menuOpen = true;
 };
 
 static const char* KEY_NAMES[] = { "Всегда", "Mouse4", "Mouse5", "Alt", "Shift", "Ctrl", "CapsLock" };
@@ -409,6 +409,9 @@ int main() {
     pst.Colors[ImGuiCol_SliderGrab] = ImVec4(0.35f, 0.62f, 1.0f, 1);
     pst.Colors[ImGuiCol_CheckMark] = ImVec4(0.35f, 0.62f, 1.0f, 1);
     ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(g_Device, g_Context);
+
+    // DIAGNOSTIC: если окно создалось - покажем MessageBox
+    MessageBoxA(hwnd, "Окно создано. Нажми OK чтобы продолжить.\nЕсли это окно не появилось - проблема на уровне окна, не чит.", "Void DLC - Проверка", MB_OK | MB_ICONINFORMATION);
 
     const float clear[4] = { 0,0,0,0 };
     static const int kSkel[][2] = { {6,5},{5,4},{4,2},{2,0},{4,8},{8,9},{9,10},{4,13},{13,14},{14,15},{0,22},{22,23},{23,24},{0,25},{25,26},{26,27} };
