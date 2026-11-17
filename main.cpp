@@ -1,9 +1,11 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <d3d11.h>
+#include <urlmon.h>
 #include <cstdio>
 #include <cmath>
 #include <iostream>
+#include <string>
 #include <atomic>
 
 #include <imgui.h>
@@ -12,15 +14,17 @@
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "urlmon.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
-// Твои найденные глобальные оффсеты
+#define CURRENT_VERSION "1.0.0"
+#define VERSION_URL "https://raw.githubusercontent.com/essde342-bit/cs2-cheat/main/version.json"
+
 #define DW_ENTITY_LIST          0x2709010
 #define DW_LOCAL_PLAYER_PAWN    0x2553D38
 #define DW_VIEW_MATRIX          0x2559640
 
-// Структурные оффсеты (из схемы классов, меняются редко)
 #define M_I_HEALTH              0x344
 #define M_I_TEAM_NUM            0x3E3
 #define M_LIFE_STATE            0x348
@@ -63,6 +67,42 @@ static ID3D11Device* g_Device = nullptr;
 static ID3D11DeviceContext* g_Context = nullptr;
 static IDXGISwapChain* g_SwapChain = nullptr;
 static ID3D11RenderTargetView* g_RTV = nullptr;
+
+static std::string ExtractJsonString(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\"";
+    size_t pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return "";
+    pos = json.find('"', pos + 1);
+    if (pos == std::string::npos) return "";
+    size_t end = json.find('"', pos + 1);
+    if (end == std::string::npos) return "";
+    return json.substr(pos + 1, end - pos - 1);
+}
+
+static bool CheckPayloadVersion() {
+    char tmpFile[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmpFile);
+    std::string path = std::string(tmpFile) + "void_dlc_check.json";
+
+    HRESULT hr = URLDownloadToFileA(nullptr, VERSION_URL, path.c_str(), 0, nullptr);
+    if (FAILED(hr)) return true;
+
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return true;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    std::string buf(sz, '\0');
+    fread(&buf[0], 1, sz, f);
+    fclose(f);
+    DeleteFileA(path.c_str());
+
+    std::string remoteVer = ExtractJsonString(buf, "version");
+    if (remoteVer.empty() || remoteVer == CURRENT_VERSION) return true;
+    return false;
+}
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) return 1;
@@ -157,7 +197,7 @@ static bool W2S(const Vec3& w, Vec2& s, const Mat4& mat, int sw, int sh) {
 
 static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(380, 460), ImGuiCond_FirstUseEver);
-    ImGui::Begin("CS2 ESP", &g_Settings.menuOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar);
+    ImGui::Begin("Void DLC", &g_Settings.menuOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar);
     ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f), "INSERT - show/hide menu"); ImGui::Separator();
     ImGui::Checkbox("Enable ESP", &g_Settings.espEnabled); ImGui::Separator();
     ImGui::Checkbox("Box", &g_Settings.box);
@@ -173,6 +213,15 @@ static void RenderMenu() {
 }
 
 int main() {
+    SetConsoleTitleA("Void DLC");
+
+    bool versionOk = CheckPayloadVersion();
+    if (!versionOk) {
+        std::cout << "[!] Client outdated. Please update Void DLC." << std::endl;
+        system("pause");
+        return 1;
+    }
+
     Memory mem;
     if (!mem.Init()) { system("pause"); return 1; }
 
@@ -184,9 +233,9 @@ int main() {
     int winW = rc.right - rc.left, winH = rc.bottom - rc.top;
 
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
-    wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"CS2ESP_Class"; RegisterClassExW(&wc);
+    wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"VoidDLC_Class"; RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED, wc.lpszClassName, L"CS2 ESP", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED, wc.lpszClassName, L"Void DLC", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
     SetLayeredWindowAttributes(hwnd, RGB(0,0,0), 255, LWA_ALPHA); ShowWindow(hwnd, SW_SHOW); UpdateWindow(hwnd);
     RegisterHotKey(nullptr, HOTKEY_MENU_ID, MOD_NOREPEAT, HOTKEY_MENU_KEY);
 
