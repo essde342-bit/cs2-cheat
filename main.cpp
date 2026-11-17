@@ -74,6 +74,7 @@ static ID3D11DeviceContext* g_Context = nullptr;
 static IDXGISwapChain* g_SwapChain = nullptr;
 static ID3D11RenderTargetView* g_RTV = nullptr;
 static HWND g_GameWnd = nullptr;
+static HWND g_OverlayWnd = nullptr;
 static std::string g_CfgPath;
 static bool g_VisOk = false;
 
@@ -368,18 +369,19 @@ int main() {
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = cls; RegisterClassExW(&wc);
     
-    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
-    if (!hwnd) { system("pause"); return 1; }
+    g_OverlayWnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!g_OverlayWnd) { system("pause"); return 1; }
     
-    MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(hwnd, &mg);
+    MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(g_OverlayWnd, &mg);
     
-    ShowWindow(hwnd, SW_SHOW); UpdateWindow(hwnd);
+    ShowWindow(g_OverlayWnd, SW_SHOW); UpdateWindow(g_OverlayWnd);
     
-    SetClickThrough(hwnd, false);
+    // Изначально меню открыто -> ловим клики
+    SetClickThrough(g_OverlayWnd, false);
 
     DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferDesc.RefreshRate = { 60,1 };
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.OutputWindow = hwnd; sd.SampleDesc.Count = 1;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.OutputWindow = g_OverlayWnd; sd.SampleDesc.Count = 1;
     sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
     D3D_FEATURE_LEVEL fl;
     if (D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &sd, &g_SwapChain, &g_Device, &fl, &g_Context) != S_OK) { system("pause"); return 1; }
@@ -399,11 +401,11 @@ int main() {
     pst.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.22f, 0.45f, 0.75f, 1);
     pst.Colors[ImGuiCol_SliderGrab] = ImVec4(0.35f, 0.62f, 1.0f, 1);
     pst.Colors[ImGuiCol_CheckMark] = ImVec4(0.35f, 0.62f, 1.0f, 1);
-    ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(g_Device, g_Context);
+    ImGui_ImplWin32_Init(g_OverlayWnd); ImGui_ImplDX11_Init(g_Device, g_Context);
 
     const float clear[4] = { 0,0,0,0 };
     static const int kSkel[][2] = { {6,5},{5,4},{4,2},{2,0},{4,8},{8,9},{9,10},{4,13},{13,14},{14,15},{0,22},{22,23},{23,24},{0,25},{25,26},{26,27} };
-    bool lastMenu = g.menuOpen, prevAimKey = false, aimToggled = false, prevMenuKey = false;
+    bool lastMenu = g.menuOpen, prevAimKey = false, aimToggled = false, prevMenuKey = false, lastClickThrough = false;
     uintptr_t lastTarget = 0; DWORD acquireAt = 0;
     bool trigDown = false; DWORD trigUpAt = 0, lastShot = 0;
     float usedSens = 2.5f; int localIndex = -1;
@@ -416,15 +418,47 @@ int main() {
         }
         if (!g_Running) break;
 
-        // ЗАХАРДОЖЕНО: Правый Shift для меню
         bool menuKeyDown = (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
         if (menuKeyDown && !prevMenuKey) {
             g.menuOpen = !g.menuOpen;
         }
         prevMenuKey = menuKeyDown;
 
+        // Динамический хитбокс: проверяем позицию мыши относительно меню
+        if (g.menuOpen) {
+            POINT mousePos;
+            GetCursorPos(&mousePos);
+            ScreenToClient(g_OverlayWnd, &mousePos);
+            
+            // Получаем позицию и размер меню ImGui
+            ImGuiWindow* menuWindow = ImGui::FindWindowByName("Void DLC");
+            bool mouseOverMenu = false;
+            
+            if (menuWindow && menuWindow->Active) {
+                ImVec2 menuPos = menuWindow->Pos;
+                ImVec2 menuSize = menuWindow->Size;
+                
+                if (mousePos.x >= menuPos.x && mousePos.x <= menuPos.x + menuSize.x &&
+                    mousePos.y >= menuPos.y && mousePos.y <= menuPos.y + menuSize.y) {
+                    mouseOverMenu = true;
+                }
+            }
+            
+            // Если мышь над меню - ловим клики, иначе пропускаем
+            bool shouldPassClicks = !mouseOverMenu;
+            if (shouldPassClicks != lastClickThrough) {
+                SetClickThrough(g_OverlayWnd, shouldPassClicks);
+                lastClickThrough = shouldPassClicks;
+            }
+        } else {
+            // Меню закрыто - всегда пропускаем клики
+            if (!lastClickThrough) {
+                SetClickThrough(g_OverlayWnd, true);
+                lastClickThrough = true;
+            }
+        }
+
         if (g.menuOpen != lastMenu) {
-            SetClickThrough(hwnd, !g.menuOpen);
             lastMenu = g.menuOpen;
         }
 
@@ -579,7 +613,7 @@ int main() {
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     if (g_RTV) g_RTV->Release(); if (g_SwapChain) g_SwapChain->Release();
     if (g_Context) g_Context->Release(); if (g_Device) g_Device->Release();
-    DestroyWindow(hwnd); UnregisterClassW(cls, wc.hInstance);
+    DestroyWindow(g_OverlayWnd); UnregisterClassW(cls, wc.hInstance);
     if (mem.handle) CloseHandle(mem.handle);
     return 0;
 }
