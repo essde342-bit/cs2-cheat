@@ -45,6 +45,10 @@ struct Vec3 { float x, y, z; };
 struct Vec2 { float x, y; };
 struct Mat4 { float m[4][4]; };
 
+// Глобальные переменные для позиции меню
+static ImVec2 g_MenuPos(0, 0);
+static ImVec2 g_MenuSize(0, 0);
+
 struct Settings {
     bool espEnabled = true, box = true, skeleton = true, healthBar = true, hpText = true;
     bool snaplines = false, showTeam = false, showBots = true;
@@ -288,6 +292,11 @@ static void SliderIHelp(const char* label, int* v, int mn, int mx, const char* h
 static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("Void DLC", &g.menuOpen, ImGuiWindowFlags_NoCollapse);
+    
+    // Сохраняем позицию и размер меню через публичное API
+    g_MenuPos = ImGui::GetWindowPos();
+    g_MenuSize = ImGui::GetWindowSize();
+    
     ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "Правый Shift - меню | v%s", CURRENT_VERSION);
     ImGui::Separator();
     if (ImGui::BeginTabBar("tabs")) {
@@ -376,7 +385,6 @@ int main() {
     
     ShowWindow(g_OverlayWnd, SW_SHOW); UpdateWindow(g_OverlayWnd);
     
-    // Изначально меню открыто -> ловим клики
     SetClickThrough(g_OverlayWnd, false);
 
     DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
@@ -423,52 +431,6 @@ int main() {
             g.menuOpen = !g.menuOpen;
         }
         prevMenuKey = menuKeyDown;
-
-        // Динамический хитбокс: проверяем позицию мыши относительно меню
-        if (g.menuOpen) {
-            POINT mousePos;
-            GetCursorPos(&mousePos);
-            ScreenToClient(g_OverlayWnd, &mousePos);
-            
-            // Получаем позицию и размер меню ImGui
-            ImGuiWindow* menuWindow = ImGui::FindWindowByName("Void DLC");
-            bool mouseOverMenu = false;
-            
-            if (menuWindow && menuWindow->Active) {
-                ImVec2 menuPos = menuWindow->Pos;
-                ImVec2 menuSize = menuWindow->Size;
-                
-                if (mousePos.x >= menuPos.x && mousePos.x <= menuPos.x + menuSize.x &&
-                    mousePos.y >= menuPos.y && mousePos.y <= menuPos.y + menuSize.y) {
-                    mouseOverMenu = true;
-                }
-            }
-            
-            // Если мышь над меню - ловим клики, иначе пропускаем
-            bool shouldPassClicks = !mouseOverMenu;
-            if (shouldPassClicks != lastClickThrough) {
-                SetClickThrough(g_OverlayWnd, shouldPassClicks);
-                lastClickThrough = shouldPassClicks;
-            }
-        } else {
-            // Меню закрыто - всегда пропускаем клики
-            if (!lastClickThrough) {
-                SetClickThrough(g_OverlayWnd, true);
-                lastClickThrough = true;
-            }
-        }
-
-        if (g.menuOpen != lastMenu) {
-            lastMenu = g.menuOpen;
-        }
-
-        DWORD now = GetTickCount();
-        int vk = KEY_VKS[g.aimKeyIdx];
-        bool keyDown = (vk == 0) ? true : (GetAsyncKeyState(vk) & 0x8000) != 0;
-        bool aimActive;
-        if (g.aimToggle && vk != 0) { if (keyDown && !prevAimKey) aimToggled = !aimToggled; aimActive = aimToggled; }
-        else aimActive = keyDown;
-        prevAimKey = keyDown;
 
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
         auto* dl = ImGui::GetBackgroundDrawList();
@@ -600,7 +562,32 @@ int main() {
             if (g.hpText) { char t[16]; sprintf_s(t, "%d", p.hp); dl->AddText(ImVec2(p.sHead.x-8, bt-16), IM_COL32(255,255,255,255), t); }
         }
 
-        if (g.menuOpen) RenderMenu();
+        if (g.menuOpen) {
+            RenderMenu();
+            
+            // Динамический хитбокс: проверяем позицию мыши
+            POINT mousePos;
+            GetCursorPos(&mousePos);
+            ScreenToClient(g_OverlayWnd, &mousePos);
+            
+            bool mouseOverMenu = (mousePos.x >= g_MenuPos.x && mousePos.x <= g_MenuPos.x + g_MenuSize.x &&
+                                  mousePos.y >= g_MenuPos.y && mousePos.y <= g_MenuPos.y + g_MenuSize.y);
+            
+            bool shouldPassClicks = !mouseOverMenu;
+            if (shouldPassClicks != lastClickThrough) {
+                SetClickThrough(g_OverlayWnd, shouldPassClicks);
+                lastClickThrough = shouldPassClicks;
+            }
+        } else {
+            if (!lastClickThrough) {
+                SetClickThrough(g_OverlayWnd, true);
+                lastClickThrough = true;
+            }
+        }
+
+        if (g.menuOpen != lastMenu) {
+            lastMenu = g.menuOpen;
+        }
 
         ImGui::Render();
         g_Context->OMSetRenderTargets(1, &g_RTV, nullptr);
