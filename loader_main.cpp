@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <TlHelp32.h>
 #include <d3d11.h>
 #include <cstdio>
 #include <string>
@@ -173,7 +174,7 @@ int main() {
     st.WindowRounding = 0.f;
     st.WindowPadding = ImVec2(20, 20);
     ImVec4* colors = st.Colors;
-    colors[ImGuiCol_WindowBg] = ImVec4(0.05f, 0.06f, 0.09f, 1.0f);
+    colors[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
     colors[ImGuiCol_Button] = ImVec4(0.15f, 0.35f, 0.55f, 1.0f);
     colors[ImGuiCol_ButtonHovered] = ImVec4(0.20f, 0.45f, 0.70f, 1.0f);
     colors[ImGuiCol_ButtonActive] = ImVec4(0.10f, 0.30f, 0.50f, 1.0f);
@@ -183,7 +184,7 @@ int main() {
 
     CreateLogoTexture();
 
-    const float clear[4] = { 0.05f, 0.06f, 0.09f, 1.0f };
+    const float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     char status[160] = "initializing...";
 
     while (g_Running) {
