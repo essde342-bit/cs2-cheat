@@ -47,14 +47,14 @@ jobs:
       run: |
         $exe = Get-ChildItem -Path build -Recurse -Filter "CS2Loader.exe" | Select-Object -First 1
         if (-not $exe) { Write-Error "Build failed - no exe"; exit 1 }
-        Copy-Item $exe.FullName "CS2Loader.exe"
+        Copy-Item $exe.FullName "VoidDLC.exe"
         Write-Host "OK: $($exe.FullName)"
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: CS2Loader
-        path: CS2Loader.exe
+        name: VoidDLC
+        path: VoidDLC.exe
         retention-days: 90
 
   release:
@@ -67,11 +67,11 @@ jobs:
     steps:
     - uses: actions/download-artifact@v4
       with:
-        name: CS2Loader
+        name: VoidDLC
 
     - uses: softprops/action-gh-release@v2
       with:
-        files: CS2Loader.exe
+        files: VoidDLC.exe
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
