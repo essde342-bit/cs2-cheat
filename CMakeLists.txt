@@ -1,11 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
-project(CS2ESP LANGUAGES CXX)
+project(CS2Loader LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Статический CRT (/MT) для ВСЕХ целей, включая ImGui.
-# Обязательно ДО создания таргетов, иначе будет конфликт MSVCRT/libcmt.
+# Статический CRT для всех целей
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 include(FetchContent)
@@ -14,7 +13,13 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG        v1.90.4
 )
-FetchContent_MakeAvailable(imgui)
+FetchContent_Declare(
+    stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(imgui stb)
 
 add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -28,13 +33,28 @@ add_library(imgui_lib STATIC
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
+    ${stb_SOURCE_DIR}
 )
 
 target_link_libraries(imgui_lib PUBLIC d3d11 dxgi)
 
+# --- Payload: сам чит, собирается как раньше ---
 add_executable(CS2ESP main.cpp)
 target_link_libraries(CS2ESP PRIVATE imgui_lib)
+target_compile_options(CS2ESP PRIVATE /W3 /O2 /utf-8)
 
-if(MSVC)
-    target_compile_options(CS2ESP PRIVATE /W3 /O2 /utf-8)
+# --- Ресурс: зашиваем готовый CS2ESP.exe + логотип в лоадер ---
+set(PAYLOAD_RC ${CMAKE_CURRENT_BINARY_DIR}/payload.rc)
+set(RC_CONTENT "1 RCDATA \"${CMAKE_CURRENT_BINARY_DIR}/CS2ESP.exe\"\n")
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/resources/logo.png)
+    string(APPEND RC_CONTENT "2 RCDATA \"${CMAKE_CURRENT_SOURCE_DIR}/resources/logo.png\"\n")
+elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/resources/logo.jpg)
+    string(APPEND RC_CONTENT "2 RCDATA \"${CMAKE_CURRENT_SOURCE_DIR}/resources/logo.jpg\"\n")
 endif()
+file(GENERATE OUTPUT ${PAYLOAD_RC} CONTENT "${RC_CONTENT}")
+
+# --- Loader ---
+add_executable(CS2Loader loader_main.cpp ${PAYLOAD_RC})
+add_dependencies(CS2Loader CS2ESP)
+target_link_libraries(CS2Loader PRIVATE imgui_lib)
+target_compile_options(CS2Loader PRIVATE /W3 /O2 /utf-8)
