@@ -59,14 +59,11 @@ struct Settings {
     bool trigEnabled = false, trigRequireAimKey = true;
     float trigFov = 1.5f;
     int trigDelayMs = 80, trigCooldownMs = 120, trigHoldMs = 40;
-    int menuKeyIdx = 5;
     bool menuOpen = true;
 };
 
 static const char* KEY_NAMES[] = { "Всегда", "Mouse4", "Mouse5", "Alt", "Shift", "Ctrl", "CapsLock" };
 static const int KEY_VKS[] = { 0, VK_XBUTTON1, VK_XBUTTON2, VK_MENU, VK_SHIFT, VK_CONTROL, VK_CAPITAL };
-static const char* MENU_KEY_NAMES[] = { "Правый Shift", "Правый Ctrl", "Правый Alt", "Insert", "Home", "End", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12" };
-static const int MENU_KEY_VKS[] = { VK_RSHIFT, VK_RCONTROL, VK_RMENU, VK_INSERT, VK_HOME, VK_END, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12 };
 static const char* BONE_NAMES[] = { "Голова", "Шея", "Грудь", "Таз" };
 static const int BONE_IDS[] = { 6, 5, 4, 0 };
 
@@ -108,7 +105,6 @@ static void SaveConfig() {
     WI("trig", "on", g.trigEnabled); WI("trig", "reqkey", g.trigRequireAimKey);
     WF("trig", "fov", g.trigFov); WI("trig", "delay", g.trigDelayMs);
     WI("trig", "cool", g.trigCooldownMs); WI("trig", "hold", g.trigHoldMs);
-    WI("menu", "key", g.menuKeyIdx);
 }
 static void LoadConfig() {
     g.maxDistance = RF("vis", "maxdist", g.maxDistance); g.boxThickness = RF("vis", "boxthick", g.boxThickness);
@@ -124,10 +120,8 @@ static void LoadConfig() {
     g.trigEnabled = RI("trig", "on", g.trigEnabled); g.trigRequireAimKey = RI("trig", "reqkey", g.trigRequireAimKey);
     g.trigFov = RF("trig", "fov", g.trigFov); g.trigDelayMs = RI("trig", "delay", g.trigDelayMs);
     g.trigCooldownMs = RI("trig", "cool", g.trigCooldownMs); g.trigHoldMs = RI("trig", "hold", g.trigHoldMs);
-    g.menuKeyIdx = RI("menu", "key", g.menuKeyIdx);
     if (g.aimKeyIdx < 0 || g.aimKeyIdx > 6) g.aimKeyIdx = 2;
     if (g.aimBoneIdx < 0 || g.aimBoneIdx > 3) g.aimBoneIdx = 0;
-    if (g.menuKeyIdx < 0 || g.menuKeyIdx >= (int)(sizeof(MENU_KEY_VKS)/sizeof(MENU_KEY_VKS[0]))) g.menuKeyIdx = 0;
 }
 static void Preset(int mode) {
     if (mode == 0) { g.aimFov = 3; g.aimSmooth = 12; g.aimJitter = 0.4f; g.aimReactionMs = 180; g.aimBoneIdx = 1; g.visEnabled = true; g.trigFov = 1.0f; g.trigDelayMs = 120; g.trigCooldownMs = 200; }
@@ -165,16 +159,16 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     return DefWindowProcW(h, m, w, l);
 }
-static void SetClickThrough(HWND h, bool on) {
+
+static void SetClickThrough(HWND h, bool passClicks) {
     LONG_PTR ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-    if (on) {
-        ex |= WS_EX_TRANSPARENT;
-    } else {
-        ex &= ~WS_EX_TRANSPARENT;
+    LONG_PTR newEx = passClicks ? (ex | WS_EX_TRANSPARENT) : (ex & ~WS_EX_TRANSPARENT);
+    if (newEx != ex) {
+        SetWindowLongPtrW(h, GWL_EXSTYLE, newEx);
+        SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
-    SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
-    SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
+
 static ImU32 ToU32(const float c[4]) { return IM_COL32((int)(c[0]*255),(int)(c[1]*255),(int)(c[2]*255),(int)(c[3]*255)); }
 static DWORD FindProcessId(const char* n) {
     HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -292,8 +286,8 @@ static void SliderIHelp(const char* label, int* v, int mn, int mx, const char* h
 
 static void RenderMenu() {
     ImGui::SetNextWindowSize(ImVec2(470, 560), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Void DLC", nullptr, ImGuiWindowFlags_NoCollapse);
-    ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "%s - меню | v%s", MENU_KEY_NAMES[g.menuKeyIdx], CURRENT_VERSION);
+    ImGui::Begin("Void DLC", &g.menuOpen, ImGuiWindowFlags_NoCollapse);
+    ImGui::TextColored(ImVec4(0.6f,0.8f,1,1), "Правый Shift - меню | v%s", CURRENT_VERSION);
     ImGui::Separator();
     if (ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Визуал")) {
@@ -345,9 +339,6 @@ static void RenderMenu() {
             if (ImGui::Button("Balanced", ImVec2(110, 30))) Preset(1); ImGui::SameLine(); Help("Среднее между незаметностью и скоростью.");
             if (ImGui::Button("Rage (быстро)", ImVec2(120, 30))) Preset(2); ImGui::SameLine(); Help("Быстро и резко, большой радиус. Заметно, для дезматча/ботов.");
             ImGui::Separator();
-            ImGui::TextUnformatted("Кнопка меню:");
-            ImGui::Combo("##menukey", &g.menuKeyIdx, MENU_KEY_NAMES, IM_ARRAYSIZE(MENU_KEY_NAMES)); ImGui::SameLine(); Help("Кнопка для открытия/закрытия этого меню. Правый Shift по умолчанию.");
-            ImGui::Separator();
             if (ImGui::Button("Сохранить", ImVec2(180, 30))) SaveConfig(); ImGui::SameLine();
             if (ImGui::Button("Загрузить", ImVec2(180, 30))) LoadConfig();
             ImGui::Spacing();
@@ -377,11 +368,13 @@ int main() {
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = cls; RegisterClassExW(&wc);
     
-    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
     if (!hwnd) { system("pause"); return 1; }
-    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+    
     MARGINS mg{ -1,-1,-1,-1 }; DwmExtendFrameIntoClientArea(hwnd, &mg);
+    
     ShowWindow(hwnd, SW_SHOW); UpdateWindow(hwnd);
+    
     SetClickThrough(hwnd, false);
 
     DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
@@ -410,7 +403,7 @@ int main() {
 
     const float clear[4] = { 0,0,0,0 };
     static const int kSkel[][2] = { {6,5},{5,4},{4,2},{2,0},{4,8},{8,9},{9,10},{4,13},{13,14},{14,15},{0,22},{22,23},{23,24},{0,25},{25,26},{26,27} };
-    bool lastMenu = false, prevAimKey = false, aimToggled = false, prevMenuKey = false;
+    bool lastMenu = g.menuOpen, prevAimKey = false, aimToggled = false, prevMenuKey = false;
     uintptr_t lastTarget = 0; DWORD acquireAt = 0;
     bool trigDown = false; DWORD trigUpAt = 0, lastShot = 0;
     float usedSens = 2.5f; int localIndex = -1;
@@ -423,15 +416,19 @@ int main() {
         }
         if (!g_Running) break;
 
-        int menuVK = MENU_KEY_VKS[g.menuKeyIdx];
-        bool menuKeyDown = (GetAsyncKeyState(menuVK) & 0x8000) != 0;
-        if (menuKeyDown && !prevMenuKey) g.menuOpen = !g.menuOpen;
+        // ЗАХАРДОЖЕНО: Правый Shift для меню
+        bool menuKeyDown = (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+        if (menuKeyDown && !prevMenuKey) {
+            g.menuOpen = !g.menuOpen;
+        }
         prevMenuKey = menuKeyDown;
 
-        if (g.menuOpen != lastMenu) { SetClickThrough(hwnd, !g.menuOpen); lastMenu = g.menuOpen; }
+        if (g.menuOpen != lastMenu) {
+            SetClickThrough(hwnd, !g.menuOpen);
+            lastMenu = g.menuOpen;
+        }
 
         DWORD now = GetTickCount();
-        bool foreground = (GetForegroundWindow() == g_GameWnd);
         int vk = KEY_VKS[g.aimKeyIdx];
         bool keyDown = (vk == 0) ? true : (GetAsyncKeyState(vk) & 0x8000) != 0;
         bool aimActive;
@@ -526,7 +523,7 @@ int main() {
         if (target && target->pawn != lastTarget) { lastTarget = target->pawn; acquireAt = now; }
         if (!target) lastTarget = 0;
 
-        bool canAct = foreground && !g.menuOpen;
+        bool canAct = !g.menuOpen;
         if (g.aimEnabled && aimActive && canAct && target && haveAngles && (now - acquireAt) >= (DWORD)g.aimReactionMs) {
             float dyaw = NormYaw(target->yaw - curAngles.y);
             float dpitch = target->pitch - curAngles.x;
