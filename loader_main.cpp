@@ -1,7 +1,10 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <d3d11.h>
+#include <urlmon.h>
 #include <cstdio>
+#include <cmath>
+#include <iostream>
 #include <string>
 #include <atomic>
 
@@ -9,35 +12,124 @@
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
-
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
-#pragma comment(linker, "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup")
+#pragma comment(lib, "urlmon.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
-#define ID_PAYLOAD 1
-#define ID_LOGO    2
+#define CURRENT_VERSION "1.0.0"
+#define VERSION_URL "https://raw.githubusercontent.com/essde342-bit/cs2-cheat/main/version.json"
 
+#define DW_ENTITY_LIST          0x2709010
+#define DW_LOCAL_PLAYER_PAWN    0x2553D38
+#define DW_VIEW_MATRIX          0x2559640
+
+#define M_I_HEALTH              0x344
+#define M_I_TEAM_NUM            0x3E3
+#define M_LIFE_STATE            0x348
+#define M_P_GAME_SCENE_NODE     0x328
+#define M_H_PLAYER_PAWN         0x7FC
+
+#define HOTKEY_MENU_ID 1
+#define HOTKEY_MENU_KEY VK_INSERT
+
+struct Vec3 { float x, y, z; };
+struct Vec2 { float x, y; };
+struct Mat4 { float m[4][4]; };
+
+struct PlayerInfo {
+    Vec3 origin;
+    float bones[64][3][4];
+    int health;
+    int team;
+};
+
+struct Settings {
+    bool espEnabled = true;
+    bool box = true;
+    bool skeleton = true;
+    bool healthBar = true;
+    bool hpText = true;
+    bool snaplines = false;
+    bool showTeam = false;
+    float maxDistance = 5000.f;
+    float boxThickness = 2.f;
+    float boxColor[4] = { 1.f, 0.f, 0.f, 1.f };
+    float skelColor[4] = { 1.f, 1.f, 1.f, 1.f };
+    float snapColor[4] = { 1.f, 1.f, 0.f, 1.f };
+    bool menuOpen = false;
+};
+
+static std::atomic<bool> g_Running{ true };
+static Settings g_Settings;
 static ID3D11Device* g_Device = nullptr;
 static ID3D11DeviceContext* g_Context = nullptr;
 static IDXGISwapChain* g_SwapChain = nullptr;
 static ID3D11RenderTargetView* g_RTV = nullptr;
-static ID3D11ShaderResourceView* g_LogoSRV = nullptr;
-static int g_LogoW = 0, g_LogoH = 0;
 
-static HANDLE g_PayloadProc = nullptr;
-static std::string g_PayloadPath;
-static std::atomic<bool> g_Running{ true };
+static std::string ExtractJsonString(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\"";
+    size_t pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return "";
+    pos = json.find('"', pos + 1);
+    if (pos == std::string::npos) return "";
+    size_t end = json.find('"', pos + 1);
+    if (end == std::string::npos) return "";
+    return json.substr(pos + 1, end - pos - 1);
+}
+
+static bool CheckPayloadVersion() {
+    char tmpFile[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmpFile);
+    std::string path = std::string(tmpFile) + "void_dlc_check.json";
+
+    HRESULT hr = URLDownloadToFileA(nullptr, VERSION_URL, path.c_str(), 0, nullptr);
+    if (FAILED(hr)) return true;
+
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return true;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    std::string buf(sz, '\0');
+    fread(&buf[0], 1, sz, f);
+    fclose(f);
+    DeleteFileA(path.c_str());
+
+    std::string remoteVer = ExtractJsonString(buf, "version");
+    if (remoteVer.empty() || remoteVer == CURRENT_VERSION) return true;
+    return false;
+}
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) return 1;
     switch (msg) {
     case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_SIZE:
+        if (g_Device && g_SwapChain && wParam != SIZE_MINIMIZED) {
+            if (g_RTV) { g_RTV->Release(); g_RTV = nullptr; }
+            g_SwapChain->ResizeBuffers(0, LOWORD(lParam), HIWORD(lParam), DXGI_FORMAT_UNKNOWN, 0);
+            ID3D11Texture2D* backBuf = nullptr;
+            g_SwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuf));
+            g_Device->CreateRenderTargetView(backBuf, nullptr, &g_RTV);
+            backBuf->Release();
+        }
+        return 0;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void SetClickThrough(HWND hwnd, bool enabled) {
+    LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (enabled) ex |= WS_EX_TRANSPARENT; else ex &= ~WS_EX_TRANSPARENT;
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+}
+
+static ImU32 ToU32(const float c[4]) {
+    return IM_COL32((int)(c[0]*255), (int)(c[1]*255), (int)(c[2]*255), (int)(c[3]*255));
 }
 
 static DWORD FindProcessId(const char* name) {
@@ -50,114 +142,102 @@ static DWORD FindProcessId(const char* name) {
     CloseHandle(snap); return pid;
 }
 
-static bool LoadEmbeddedResource(int id, void** data, DWORD* size) {
-    HRSRC hr = FindResourceA(nullptr, MAKEINTRESOURCEA(id), RT_RCDATA);
-    if (!hr) return false;
-    HGLOBAL hg = LoadResource(nullptr, hr);
-    if (!hg) return false;
-    *data = LockResource(hg);
-    *size = SizeofResource(nullptr, hr);
-    return *data != nullptr && *size > 0;
+struct WindowData { DWORD pid; HWND hwnd; };
+static BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
+    auto* wd = reinterpret_cast<WindowData*>(lParam); DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == wd->pid && IsWindowVisible(hwnd)) { wd->hwnd = hwnd; return FALSE; }
+    return TRUE;
 }
 
-static bool CreateLogoTexture() {
-    void* data = nullptr; DWORD size = 0;
-    if (!LoadEmbeddedResource(ID_LOGO, &data, &size)) return false;
-    int w = 0, h = 0, comp = 0;
-    unsigned char* px = stbi_load_from_memory((const stbi_uc*)data, (int)size, &w, &h, &comp, 4);
-    if (!px) return false;
-
-    D3D11_TEXTURE2D_DESC td{};
-    td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-    D3D11_SUBRESOURCE_DATA sd{}; sd.pSysMem = px; sd.SysMemPitch = w * 4;
-    ID3D11Texture2D* tex = nullptr;
-    HRESULT hr = g_Device->CreateTexture2D(&td, &sd, &tex);
-    stbi_image_free(px);
-    if (FAILED(hr)) return false;
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC vd{};
-    vd.Format = td.Format;
-    vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    vd.Texture2D.MipLevels = 1;
-    HRESULT hr2 = g_Device->CreateShaderResourceView(tex, &vd, &g_LogoSRV);
-    tex->Release();
-    if (FAILED(hr2)) return false;
-
-    g_LogoW = w; g_LogoH = h;
-    return true;
+static HWND FindWindowByPid(DWORD pid) {
+    WindowData wd{ pid, nullptr };
+    EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&wd));
+    return wd.hwnd;
 }
 
-static std::string GetTempPayloadPath() {
-    char tmp[MAX_PATH];
-    GetTempPathA(MAX_PATH, tmp);
-    return std::string(tmp) + "cs2esp_payload.exe";
-}
+class Memory {
+public:
+    HANDLE handle = nullptr; uintptr_t clientBase = 0; size_t clientSize = 0;
 
-static bool LaunchPayload() {
-    void* data = nullptr; DWORD size = 0;
-    if (!LoadEmbeddedResource(ID_PAYLOAD, &data, &size)) return false;
-
-    g_PayloadPath = GetTempPayloadPath();
-    HANDLE f = CreateFileA(g_PayloadPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return false;
-    DWORD written = 0;
-    WriteFile(f, data, size, &written, nullptr);
-    CloseHandle(f);
-    if (written != size) return false;
-
-    STARTUPINFOA si{}; si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    BOOL ok = CreateProcessA(nullptr, (char*)g_PayloadPath.c_str(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
-    if (!ok) return false;
-
-    CloseHandle(pi.hThread);
-    g_PayloadProc = pi.hProcess;
-    return true;
-}
-
-static void UnloadPayload() {
-    if (g_PayloadProc) {
-        TerminateProcess(g_PayloadProc, 0);
-        CloseHandle(g_PayloadProc);
-        g_PayloadProc = nullptr;
+    bool Init() {
+        DWORD pid = FindProcessId("cs2.exe"); if (!pid) return false;
+        handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid); if (!handle) return false;
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+        if (snap == INVALID_HANDLE_VALUE) return false;
+        MODULEENTRY32 me; me.dwSize = sizeof(me);
+        if (Module32First(snap, &me)) {
+            do { if (_stricmp(me.szModule, "client.dll") == 0) { clientBase = reinterpret_cast<uintptr_t>(me.modBaseAddr); clientSize = me.modBaseSize; break; } } while (Module32Next(snap, &me));
+        }
+        CloseHandle(snap); return clientBase != 0;
     }
-    DeleteFileA(g_PayloadPath.c_str());
+
+    template<typename T> T Read(uintptr_t addr) const {
+        T val{}; ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(addr), &val, sizeof(T), nullptr); return val;
+    }
+
+    bool ReadRaw(uintptr_t addr, void* buf, size_t size) const {
+        return ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(addr), buf, size, nullptr) == TRUE;
+    }
+
+    uintptr_t GetListEntity(uintptr_t listBase, int index) const {
+        uintptr_t chunk = Read<uintptr_t>(listBase + 8 * ((index & 0x7FFF) >> 9) + 16);
+        if (!chunk) return 0; return Read<uintptr_t>(chunk + 120 * (index & 0x3FF));
+    }
+};
+
+static bool W2S(const Vec3& w, Vec2& s, const Mat4& mat, int sw, int sh) {
+    float ww = mat.m[3][0]*w.x + mat.m[3][1]*w.y + mat.m[3][2]*w.z + mat.m[3][3];
+    if (ww < 0.01f) return false;
+    float inv = 1.0f / ww;
+    s.x = sw * 0.5f + (mat.m[0][0]*w.x + mat.m[0][1]*w.y + mat.m[0][2]*w.z + mat.m[0][3]) * inv * sw * 0.5f;
+    s.y = sh * 0.5f - (mat.m[1][0]*w.x + mat.m[1][1]*w.y + mat.m[1][2]*w.z + mat.m[1][3]) * inv * sh * 0.5f;
+    return true;
 }
 
-static bool PayloadAlive() {
-    if (!g_PayloadProc) return false;
-    DWORD code = 0;
-    if (GetExitCodeProcess(g_PayloadProc, &code) && code == STILL_ACTIVE) return true;
-    CloseHandle(g_PayloadProc);
-    g_PayloadProc = nullptr;
-    return false;
-}
-
-static void CenterTextColored(const char* txt, const ImVec4& col) {
-    float w = ImGui::CalcTextSize(txt).x;
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - w) * 0.5f);
-    ImGui::TextColored(col, "%s", txt);
+static void RenderMenu() {
+    ImGui::SetNextWindowSize(ImVec2(380, 460), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Void DLC", &g_Settings.menuOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar);
+    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f), "INSERT - show/hide menu"); ImGui::Separator();
+    ImGui::Checkbox("Enable ESP", &g_Settings.espEnabled); ImGui::Separator();
+    ImGui::Checkbox("Box", &g_Settings.box);
+    if (g_Settings.box) { ImGui::Indent(16.f); ImGui::ColorEdit4("Box color", g_Settings.boxColor, ImGuiColorEditFlags_NoInputs); ImGui::SliderFloat("Box thickness", &g_Settings.boxThickness, 1.f, 5.f, "%.1f"); ImGui::Unindent(16.f); }
+    ImGui::Checkbox("Skeleton", &g_Settings.skeleton);
+    if (g_Settings.skeleton) { ImGui::Indent(16.f); ImGui::ColorEdit4("Skeleton color", g_Settings.skelColor, ImGuiColorEditFlags_NoInputs); ImGui::Unindent(16.f); }
+    ImGui::Checkbox("Health bar", &g_Settings.healthBar); ImGui::Checkbox("HP text", &g_Settings.hpText);
+    ImGui::Checkbox("Snaplines", &g_Settings.snaplines);
+    if (g_Settings.snaplines) { ImGui::Indent(16.f); ImGui::ColorEdit4("Snapline color", g_Settings.snapColor, ImGuiColorEditFlags_NoInputs); ImGui::Unindent(16.f); }
+    ImGui::Separator(); ImGui::Checkbox("Show teammates", &g_Settings.showTeam);
+    ImGui::SliderFloat("Max distance (0 = inf)", &g_Settings.maxDistance, 0.f, 10000.f, "%.0f");
+    ImGui::End();
 }
 
 int main() {
-    // Single instance
-    CreateMutexA(nullptr, TRUE, "CS2Loader_SingleInstance");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    SetConsoleTitleA("Void DLC");
 
-    int winW = 480, winH = 380;
-    int posX = (GetSystemMetrics(SM_CXSCREEN) - winW) / 2;
-    int posY = (GetSystemMetrics(SM_CYSCREEN) - winH) / 2;
+    bool versionOk = CheckPayloadVersion();
+    if (!versionOk) {
+        std::cout << "[!] Client outdated. Please update Void DLC." << std::endl;
+        system("pause");
+        return 1;
+    }
+
+    Memory mem;
+    if (!mem.Init()) { system("pause"); return 1; }
+
+    DWORD pid = FindProcessId("cs2.exe");
+    HWND gameWnd = FindWindowByPid(pid);
+    if (!gameWnd) { system("pause"); return 1; }
+
+    RECT rc; GetWindowRect(gameWnd, &rc);
+    int winW = rc.right - rc.left, winH = rc.bottom - rc.top;
 
     WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WndProc;
-    wc.hInstance = GetModuleHandleW(nullptr); wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.lpszClassName = L"CS2Loader_Class"; RegisterClassExW(&wc);
+    wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"VoidDLC_Class"; RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"CS2 Loader", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        posX, posY, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
-    ShowWindow(hwnd, SW_SHOW); UpdateWindow(hwnd);
+    HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED, wc.lpszClassName, L"Void DLC", WS_POPUP, rc.left, rc.top, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    SetLayeredWindowAttributes(hwnd, RGB(0,0,0), 255, LWA_ALPHA); ShowWindow(hwnd, SW_SHOW); UpdateWindow(hwnd);
+    RegisterHotKey(nullptr, HOTKEY_MENU_ID, MOD_NOREPEAT, HOTKEY_MENU_KEY);
 
     DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = winW; sd.BufferDesc.Height = winH;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferDesc.RefreshRate = { 60, 1 };
@@ -168,97 +248,95 @@ int main() {
     ID3D11Texture2D* backBuf = nullptr; g_SwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuf));
     g_Device->CreateRenderTargetView(backBuf, nullptr, &g_RTV); backBuf->Release();
 
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    ImGuiStyle& st = ImGui::GetStyle();
-    st.WindowRounding = 0.f;
-    st.WindowPadding = ImVec2(20, 20);
-    ImVec4* colors = st.Colors;
-    colors[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
-    colors[ImGuiCol_Button] = ImVec4(0.15f, 0.35f, 0.55f, 1.0f);
-    colors[ImGuiCol_ButtonHovered] = ImVec4(0.20f, 0.45f, 0.70f, 1.0f);
-    colors[ImGuiCol_ButtonActive] = ImVec4(0.10f, 0.30f, 0.50f, 1.0f);
-
-    ImGui_ImplWin32_Init(hwnd);
-    ImGui_ImplDX11_Init(g_Device, g_Context);
-
-    CreateLogoTexture();
-
-    const float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    char status[160] = "initializing...";
+    ImGui::CreateContext(); ImGui::StyleColorsDark(); ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(g_Device, g_Context);
+    const float clear[4] = { 0, 0, 0, 0 };
+    static const int kSkeleton[][2] = { {6,5},{5,4},{4,2},{2,0}, {4,8},{8,9},{9,10}, {4,13},{13,14},{14,15}, {0,22},{22,23},{23,24}, {0,25},{25,26},{26,27} };
+    bool lastMenuState = false;
 
     while (g_Running) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg); DispatchMessageW(&msg);
             if (msg.message == WM_QUIT) g_Running = false;
+            if (msg.message == WM_HOTKEY && msg.wParam == HOTKEY_MENU_ID) g_Settings.menuOpen = !g_Settings.menuOpen;
         }
         if (!g_Running) break;
 
+        if (g_Settings.menuOpen != lastMenuState) { SetClickThrough(hwnd, !g_Settings.menuOpen); lastMenuState = g_Settings.menuOpen; }
+
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
+        auto* dl = ImGui::GetBackgroundDrawList();
 
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-        ImGui::Begin("##loader", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
+        if (g_Settings.espEnabled) {
+            uintptr_t entityList = mem.Read<uintptr_t>(mem.clientBase + DW_ENTITY_LIST);
+            uintptr_t localPawn = mem.Read<uintptr_t>(mem.clientBase + DW_LOCAL_PLAYER_PAWN);
+            int localTeam = localPawn ? mem.Read<int>(localPawn + M_I_TEAM_NUM) : 0;
+            Vec3 localOrigin{}; Mat4 vm = mem.Read<Mat4>(mem.clientBase + DW_VIEW_MATRIX);
+            ImU32 boxCol = ToU32(g_Settings.boxColor), skelCol = ToU32(g_Settings.skelColor), snapCol = ToU32(g_Settings.snapColor);
 
-        // Logo
-        if (g_LogoSRV) {
-            float targetH = 130.f;
-            float targetW = targetH * ((float)g_LogoW / (float)g_LogoH);
-            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - targetW) * 0.5f);
-            ImGui::Image((ImTextureID)g_LogoSRV, ImVec2(targetW, targetH));
-            ImGui::Spacing();
-        }
+            for (int i = 1; i <= 64; ++i) {
+                uintptr_t controller = mem.GetListEntity(entityList, i); if (!controller) continue;
+                uint32_t pawnHandle = mem.Read<uint32_t>(controller + M_H_PLAYER_PAWN); if (!pawnHandle) continue;
+                uintptr_t pawn = mem.GetListEntity(entityList, pawnHandle & 0x7FFF);
+                if (!pawn || pawn == localPawn) continue;
 
-        CenterTextColored("C S 2   E X T E R N A L   L O A D E R", ImVec4(0.85f, 0.90f, 1.0f, 1.0f));
-        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing(); ImGui::Spacing();
+                PlayerInfo p;
+                p.health = mem.Read<int>(pawn + M_I_HEALTH);
+                if (p.health <= 0 || mem.Read<uint8_t>(pawn + M_LIFE_STATE) != 0) continue;
+                p.team = mem.Read<int>(pawn + M_I_TEAM_NUM);
+                if (!g_Settings.showTeam && p.team == localTeam) continue;
 
-        bool cs2 = FindProcessId("cs2.exe") != 0;
-        bool alive = PayloadAlive();
+                uintptr_t sceneNode = mem.Read<uintptr_t>(pawn + M_P_GAME_SCENE_NODE);
+                if (!sceneNode) continue;
+                
+                mem.ReadRaw(sceneNode + 0x90, &p.origin, sizeof(p.origin));
+                
+                if (g_Settings.maxDistance > 0.f) {
+                    float dx = p.origin.x - localOrigin.x, dy = p.origin.y - localOrigin.y, dz = p.origin.z - localOrigin.z;
+                    if (sqrtf(dx*dx + dy*dy + dz*dz) > g_Settings.maxDistance) continue;
+                }
 
-        if (alive) snprintf(status, sizeof(status), "status: PAYLOAD RUNNING");
-        else if (!cs2) snprintf(status, sizeof(status), "status: CS2 not detected - start the game first");
-        else snprintf(status, sizeof(status), "status: CS2 running - ready to launch");
+                uintptr_t boneArray = mem.Read<uintptr_t>(sceneNode + 0x80);
+                if (!boneArray) continue;
+                mem.ReadRaw(boneArray, p.bones, sizeof(p.bones));
 
-        CenterTextColored(status, alive ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f)
-            : cs2 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f)
-            : ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+                Vec3 headWorld{ p.bones[6][0][3], p.bones[6][1][3], p.bones[6][2][3] };
+                Vec3 feetWorld = p.origin; feetWorld.z -= 2.0f;
+                Vec2 sHead{}, sFeet{};
+                if (!W2S(headWorld, sHead, vm, winW, winH) || !W2S(feetWorld, sFeet, vm, winW, winH)) continue;
+                float h = sFeet.y - sHead.y; if (h < 5.0f) continue;
+                float w = h * 0.35f, boxTop = sHead.y - h * 0.06f;
 
-        ImGui::Spacing(); ImGui::Spacing();
+                if (g_Settings.snaplines) dl->AddLine(ImVec2(winW*0.5f, (float)winH), ImVec2(sFeet.x, sFeet.y), snapCol, 1.f);
+                if (g_Settings.box) dl->AddRect(ImVec2(sHead.x - w*0.5f, boxTop), ImVec2(sHead.x + w*0.5f, sFeet.y), boxCol, 0.f, 0, g_Settings.boxThickness);
+                
+                if (g_Settings.healthBar) {
+                    float hpF = static_cast<float>(p.health) / 100.f; if (hpF > 1.f) hpF = 1.f;
+                    dl->AddRectFilled(ImVec2(sHead.x - w*0.5f - 6, boxTop + (sFeet.y - boxTop) * (1.f - hpF)), ImVec2(sHead.x - w*0.5f - 2, sFeet.y), IM_COL32(0, 255, 0, 255));
+                    dl->AddRect(ImVec2(sHead.x - w*0.5f - 6, boxTop), ImVec2(sHead.x - w*0.5f - 2, sFeet.y), IM_COL32(255, 255, 255, 255), 0.f, 0, 1.f);
+                }
 
-        float bw = 150.f, bh = 36.f;
-        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (bw * 2 + 16)) * 0.5f);
-        if (ImGui::Button("LAUNCH", ImVec2(bw, bh))) {
-            if (!alive && cs2) {
-                if (LaunchPayload()) snprintf(status, sizeof(status), "status: PAYLOAD RUNNING");
-                else snprintf(status, sizeof(status), "status: LAUNCH FAILED (extract error)");
+                if (g_Settings.skeleton) {
+                    for (auto& b : kSkeleton) {
+                        Vec3 p1{ p.bones[b[0]][0][3], p.bones[b[0]][1][3], p.bones[b[0]][2][3] };
+                        Vec3 p2{ p.bones[b[1]][0][3], p.bones[b[1]][1][3], p.bones[b[1]][2][3] };
+                        Vec2 s1{}, s2{};
+                        if (W2S(p1, s1, vm, winW, winH) && W2S(p2, s2, vm, winW, winH))
+                            dl->AddLine(ImVec2(s1.x, s1.y), ImVec2(s2.x, s2.y), skelCol, 1.5f);
+                    }
+                }
+                if (g_Settings.hpText) { char txt[16]; sprintf_s(txt, "%d", p.health); dl->AddText(ImVec2(sHead.x - 8, boxTop - 16), IM_COL32(255, 255, 255, 255), txt); }
             }
         }
-        ImGui::SameLine();
-        if (ImGui::Button("UNLOAD", ImVec2(bw, bh))) {
-            UnloadPayload();
-        }
 
-        ImGui::Spacing(); ImGui::Spacing();
-        CenterTextColored("closing loader does NOT stop the cheat - use UNLOAD", ImVec4(0.45f, 0.45f, 0.50f, 1.0f));
+        if (g_Settings.menuOpen) RenderMenu();
 
-        ImGui::End();
-
-        ImGui::Render();
-        g_Context->OMSetRenderTargets(1, &g_RTV, nullptr);
-        g_Context->ClearRenderTargetView(g_RTV, clear);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        g_SwapChain->Present(1, 0);
+        ImGui::Render(); g_Context->OMSetRenderTargets(1, &g_RTV, nullptr); g_Context->ClearRenderTargetView(g_RTV, clear);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData()); g_SwapChain->Present(1, 0);
     }
 
-    ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
-    if (g_LogoSRV) g_LogoSRV->Release();
-    if (g_RTV) g_RTV->Release();
-    if (g_SwapChain) g_SwapChain->Release();
-    if (g_Context) g_Context->Release();
-    if (g_Device) g_Device->Release();
-    DestroyWindow(hwnd); UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    UnregisterHotKey(nullptr, HOTKEY_MENU_ID); ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
+    if (g_RTV) g_RTV->Release(); if (g_SwapChain) g_SwapChain->Release(); if (g_Context) g_Context->Release(); if (g_Device) g_Device->Release();
+    DestroyWindow(hwnd); UnregisterClassW(wc.lpszClassName, wc.hInstance); if (mem.handle) CloseHandle(mem.handle);
     return 0;
 }
