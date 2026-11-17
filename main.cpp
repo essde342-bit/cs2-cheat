@@ -461,13 +461,11 @@ int main() {
                 uintptr_t pw = 0;
                 bool isBot = false;
 
-                // Попробовать как controller (игрок)
                 uint32_t ph = mem.Read<uint32_t>(entity + M_H_PLAYER_PAWN);
                 if (ph) {
                     pw = mem.GetListEntity(el, ph & 0x7FFF);
                 }
 
-                // Если не получилось - попробовать как прямой pawn (бот)
                 if (!pw) {
                     int testHP = mem.Read<int>(entity + M_I_HEALTH);
                     if (testHP > 0 && testHP <= 100) {
@@ -485,7 +483,6 @@ int main() {
                 int tm = mem.Read<int>(pw + M_I_TEAM_NUM);
                 if (!g.showTeam && tm == lt) continue;
 
-                // Пропустить ботов если выключено
                 if (isBot && !g.showBots) continue;
 
                 uintptr_t sn = mem.Read<uintptr_t>(pw + M_P_GAME_SCENE_NODE);
@@ -565,13 +562,16 @@ int main() {
             if (g.hpText) { char t[16]; sprintf_s(t, "%d", p.hp); dl->AddText(ImVec2(p.sHead.x-8, bt-16), IM_COL32(255,255,255,255), t); }
         }
 
-        if (g.aimEnabled && g.fovCircle) { float r = (g.aimFov / 90.f) * (winH * 0.5f); dl->AddCircle(ImVec2(winW*0.5f, winH*0.5f), r, IM_COL32(255,255,255,60), 48, 1.f); }
-        if (g.debugHud) {
-            char dbg[160];
-            sprintf_s(dbg, "Void v%s | drawn:%d | sens:%.2f | vis:%s | aim:%s | tgt:%s | menu:%s",
-                CURRENT_VERSION, drawn, usedSens, g_VisOk ? "ok" : "n/a",
-                (g.aimEnabled && aimActive) ? "ON" : "off", target ? "yes" : "no", MENU_KEY_NAMES[g.menuKeyIdx]);
-            dl->AddText(ImVec2(8, 8), IM_COL32(0,255,128,200), dbg);
+        // FOV circle and HUD only when menu is closed
+        if (!g.menuOpen) {
+            if (g.aimEnabled && g.fovCircle) { float r = (g.aimFov / 90.f) * (winH * 0.5f); dl->AddCircle(ImVec2(winW*0.5f, winH*0.5f), r, IM_COL32(255,255,255,60), 48, 1.f); }
+            if (g.debugHud) {
+                char dbg[160];
+                sprintf_s(dbg, "Void v%s | drawn:%d | sens:%.2f | vis:%s | aim:%s | tgt:%s | menu:%s",
+                    CURRENT_VERSION, drawn, usedSens, g_VisOk ? "ok" : "n/a",
+                    (g.aimEnabled && aimActive) ? "ON" : "off", target ? "yes" : "no", MENU_KEY_NAMES[g.menuKeyIdx]);
+                dl->AddText(ImVec2(8, 8), IM_COL32(0,255,128,200), dbg);
+            }
         }
 
         if (g.menuOpen) RenderMenu();
