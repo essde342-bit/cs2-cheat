@@ -23,12 +23,12 @@ jobs:
       with:
         version: 1.11.1
 
-    - name: Cache ImGui
+    - name: Cache deps
       uses: actions/cache@v4
       with:
         path: build/_deps
-        key: ${{ runner.os }}-imgui-v1904
-        restore-keys: ${{ runner.os }}-imgui-
+        key: ${{ runner.os }}-deps-imgui-stb-v1
+        restore-keys: ${{ runner.os }}-deps-
 
     - name: Configure
       shell: cmd
@@ -45,16 +45,16 @@ jobs:
     - name: Find exe
       shell: pwsh
       run: |
-        $exe = Get-ChildItem -Path build -Recurse -Filter "CS2ESP.exe" | Select-Object -First 1
+        $exe = Get-ChildItem -Path build -Recurse -Filter "CS2Loader.exe" | Select-Object -First 1
         if (-not $exe) { Write-Error "Build failed - no exe"; exit 1 }
-        Copy-Item $exe.FullName "CS2ESP.exe"
+        Copy-Item $exe.FullName "CS2Loader.exe"
         Write-Host "OK: $($exe.FullName)"
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: CS2ESP
-        path: CS2ESP.exe
+        name: CS2Loader
+        path: CS2Loader.exe
         retention-days: 90
 
   release:
@@ -67,11 +67,11 @@ jobs:
     steps:
     - uses: actions/download-artifact@v4
       with:
-        name: CS2ESP
+        name: CS2Loader
 
     - uses: softprops/action-gh-release@v2
       with:
-        files: CS2ESP.exe
+        files: CS2Loader.exe
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
