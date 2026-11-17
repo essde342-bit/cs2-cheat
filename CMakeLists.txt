@@ -22,13 +22,11 @@ target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${stb_SOURCE_DIR})
 target_link_libraries(imgui_lib PUBLIC d3d11 dxgi)
 
-# --- Payload ---
 add_executable(CS2ESP main.cpp)
 target_link_libraries(CS2ESP PRIVATE imgui_lib urlmon dwmapi)
 target_compile_options(CS2ESP PRIVATE /W3 /O2 /utf-8)
 target_link_options(CS2ESP PRIVATE /RELEASE /DEBUG:NONE /OPT:REF /OPT:ICF)
 
-# --- Ресурс: payload + logo ---
 set(PAYLOAD_RC ${CMAKE_CURRENT_BINARY_DIR}/payload.rc)
 set(RC_CONTENT "1 RCDATA \"${CMAKE_CURRENT_BINARY_DIR}/CS2ESP.exe\"\n")
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/resources/logo.png)
@@ -38,9 +36,8 @@ elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/logo.png)
 endif()
 file(GENERATE OUTPUT ${PAYLOAD_RC} CONTENT "${RC_CONTENT}")
 
-# --- Loader ---
 add_executable(CS2Loader loader_main.cpp ${PAYLOAD_RC})
 add_dependencies(CS2Loader CS2ESP)
-target_link_libraries(CS2Loader PRIVATE imgui_lib urlmon wininet)
+target_link_libraries(CS2Loader PRIVATE imgui_lib urlmon wininet dwmapi)
 target_compile_options(CS2Loader PRIVATE /W3 /O2 /utf-8)
 target_link_options(CS2Loader PRIVATE /RELEASE /DEBUG:NONE /OPT:REF /OPT:ICF)
